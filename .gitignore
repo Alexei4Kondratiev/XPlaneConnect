@@ -51,7 +51,6 @@ TestResults/
 ipch/
 *.suo
 *.user
-*.sdf
 *.sbr
 
 # XCode Files #
@@ -97,3 +96,4 @@ Docs/~$Capability Matrix.xlsx
 *.egg-info
 build
 dist
+/.idea/
