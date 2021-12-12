@@ -31,35 +31,38 @@
 //      See Readme.md in the root of this repository or the wiki hosted on GitHub at
 //      https://github.com/nasa/XPlaneConnect/wiki for requirements, installation instructions,
 //      and detailed documentation.
-//
-//  CONTACT
-//      For questions email Christopher Teubert (christopher.a.teubert@nasa.gov)
-//
-//	CONTRIBUTORS
-//		CT: Christopher Teubert (christopher.a.teubert@nasa.gov)
-//		JW: Jason Watkins (jason.w.watkins@nasa.gov)
 
 #include "xplane-connect-cpp/xplane_connect.h"
 
-#include <cmath>
+//#include <sys/types.h>
+
+//#ifdef _WIN32
+//#include <ctime>
+//#else
+//#include <sys/time.h>
+//#endif
+
+//#include <cmath>
+
 #include <cstdarg>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
-#include <sys/types.h>
 
-#ifdef _WIN32
-#include <time.h>
-#else
-#include <sys/time.h>
-#endif
+#include <string>
+#include <utility>
 
-int sendUDP(XPCSocket sock, char buffer[], int len);
-int readUDP(XPCSocket sock, char buffer[], int len);
-int sendDREFRequest(XPCSocket sock, const char *drefs[], unsigned char count);
-int getDREFResponse(XPCSocket sock, float *values[], unsigned char count, int sizes[]);
+// Low Level UDP Functions
+XPCSocket aopenUDP(std::string xpIP, unsigned short xpPort, unsigned short port);
+void closeUDP(const XPCSocket &sock);
 
-void printError(char *functionName, char *format, ...) {
+// Default X-Plane IP and Port
+constexpr const char *kXPCDefaultXplaneAddr{"localhost"};
+constexpr std::uint16_t kXPCDefaultXplanePort{49009};
+constexpr std::uint16_t kXPCDefaultLocalPort{0};
+
+void printError(const char *functionName, const char *format, ...) {
     va_list args;
     va_start(args, format);
 
@@ -73,23 +76,28 @@ void printError(char *functionName, char *format, ...) {
 /*****************************************************************************/
 /****                       Low Level UDP functions                       ****/
 /*****************************************************************************/
-XPCSocket openUDP(const char *xpIP) { return aopenUDP(xpIP, 49009, 0); }
 
-XPCSocket aopenUDP(const char *xpIP, unsigned short xpPort, unsigned short port) {
+/// Opens a new connection to XPC on the specified port.
+///
+/// \param xpIP   A string representing the IP address of the host running X-Plane.
+/// \param xpPort The port of the X-Plane Connect plugin is listening on. Usually 49009.
+/// \param port   The local port to use when sending and receiving data from XPC.
+/// \returns      An XPCSocket struct representing the newly created connection.
+XPCSocket aopenUDP(std::string xpIP, unsigned short xpPort, unsigned short port) {
     XPCSocket sock;
 
     // Setup Port
-    struct sockaddr_in recvaddr;
+    sockaddr_in recvaddr{};
     recvaddr.sin_family = AF_INET;
     recvaddr.sin_addr.s_addr = INADDR_ANY;
     recvaddr.sin_port = htons(port);
 
     // Set X-Plane Port and IP
-    if (strcmp(xpIP, "localhost") == 0) {
+    if (xpIP == "localhost") {
         xpIP = "127.0.0.1";
     }
-    strncpy(sock.xpIP, xpIP, 16);
-    sock.xpPort = xpPort == 0 ? 49009 : xpPort;
+    sock.xplaneAddr = std::move(xpIP);
+    sock.xplanePort = xpPort == 0 ? 49009 : xpPort;
 
 #ifdef _WIN32
     WSADATA wsa;
@@ -99,11 +107,11 @@ XPCSocket aopenUDP(const char *xpIP, unsigned short xpPort, unsigned short port)
     }
 #endif
 
-    if ((sock.sock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) == -1) {
+    if ((sock.datagramSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) == -1) {
         printError("OpenUDP", "Socket creation failed");
         exit(EXIT_FAILURE);
     }
-    if (bind(sock.sock, (struct sockaddr *)&recvaddr, sizeof(recvaddr)) == -1) {
+    if (bind(sock.datagramSocket, reinterpret_cast<sockaddr *>(&recvaddr), sizeof(recvaddr)) == -1) {
         printError("OpenUDP", "Socket bind failed");
         exit(EXIT_FAILURE);
     }
@@ -119,17 +127,21 @@ XPCSocket aopenUDP(const char *xpIP, unsigned short xpPort, unsigned short port)
     timeout.tv_sec = 0;
     timeout.tv_usec = 1000;
 #endif
-    if (setsockopt(sock.sock, SOL_SOCKET, SO_RCVTIMEO, (char *)&timeout, sizeof(timeout)) < 0) {
+    if (setsockopt(sock.datagramSocket, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<char *>(&timeout), sizeof(timeout)) <
+        0) {
         printError("OpenUDP", "Failed to set timeout");
     }
     return sock;
 }
 
-void closeUDP(XPCSocket sock) {
+/// Closes the specified connection and releases resources associated with it.
+///
+/// \param sock The socket to close.
+void closeUDP(const XPCSocket &sock) {
 #ifdef _WIN32
-    int result = closesocket(sock.sock);
+    int result = closesocket(sock.datagramSocket);
 #else
-    int result = close(sock.sock);
+    int result = close(datagramSocket.datagramSocket);
 #endif
     if (result < 0) {
         printError("closeUDP", "Failed to close socket");
@@ -137,13 +149,67 @@ void closeUDP(XPCSocket sock) {
     }
 }
 
+/// Initializes a new instance of the {\code XPlaneConnect} class using default ports and assuming X-Plane is
+/// running on the local machine.
+///
+/// \throws SocketException If this instance is unable to bind to the default receive port.
+XPlaneConnect::XPlaneConnect() : XPlaneConnect(kXPCDefaultXplaneAddr) {}
+
+/// Initializes a new instance of the {\code XPlaneConnect} class using the specified X-Plane host.
+///
+/// \param xplaneAddr The network host on which X-Plane is running.
+/// \throws java.net.SocketException      If this instance is unable to bind to the specified port.
+/// \throws java.net.UnknownHostException If the specified hostname can not be resolved.
+XPlaneConnect::XPlaneConnect(std::string xplaneAddr)
+    : XPlaneConnect(std::move(xplaneAddr), kXPCDefaultXplanePort, kXPCDefaultLocalPort) {}
+
+/// Initializes a new instance of the {\code XPlaneConnect} class using the specified ports and X-Plane host.
+///
+/// \param xplaneAddr The network host on which X-Plane is running.
+/// \param xplanePort The port on which the X-Plane Connect plugin is listening.
+/// \param localPort  The local port to use when sending and receiving data from XPC.
+/// \throws java.net.SocketException      If this instance is unable to bind to the specified port.
+/// \throws java.net.UnknownHostException If the specified hostname can not be resolved.
+XPlaneConnect::XPlaneConnect(std::string xplaneAddr, std::uint16_t xplanePort, std::uint16_t localPort)
+    : xpcSocket_{aopenUDP(std::move(xplaneAddr), xplanePort, localPort)} {}
+
+/// Closes the specified connection and releases resources associated with it.
+XPlaneConnect::~XPlaneConnect() { closeUDP(xpcSocket_); }
+
+/// Gets the hostname of the X-Plane host.
+///
+/// @return The hostname of the X-Plane host.
+const std::string &XPlaneConnect::getXPlaneAddr() const noexcept { return xpcSocket_.xplaneAddr; }
+
+/// Sets the hostname of the X-Plane host.
+///
+/// @param host The new hostname of the X-Plane host machine.
+/// @throws UnknownHostException {@code host} is not valid.
+void XPlaneConnect::setXplaneAddr(std::string xplaneAddr) noexcept { xpcSocket_.xplaneAddr = std::move(xplaneAddr); }
+
+/// Gets the port on which the client sends data to X-Plane.
+///
+/// @return The outgoing port number.
+std::uint16_t XPlaneConnect::getXPlanePort() const noexcept { return xpcSocket_.xplanePort; }
+
+/// Sets the port on which the client sends data to X-Plane
+///
+/// @param port The new outgoing port number.
+/// @throws IllegalArgumentException If {@code port} is not a valid port number.
+void XPlaneConnect::setXPlanePort(std::uint16_t xplanePort) noexcept { xpcSocket_.xplanePort = xplanePort; }
+
+/// Gets the port on which the client receives data from the plugin.
+///
+/// @return The incoming port number.
+std::uint16_t XPlaneConnect::getRecvPort() const noexcept { return xpcSocket_.localPort; }
+
 /// Sends the given data to the X-Plane plugin.
 ///
 /// \param sock   The socket to use to send the data.
 /// \param buffer A pointer to the data to send.
 /// \param len    The number of bytes to send.
 /// \returns      If an error occurs, a negative number. Otehrwise, the number of bytes sent.
-int sendUDP(XPCSocket sock, char buffer[], int len) {
+int XPlaneConnect::sendUDP(char buffer[], int len) {
     // Preconditions
     if (len <= 0) {
         printError("sendUDP", "Message length must be positive.");
@@ -151,12 +217,12 @@ int sendUDP(XPCSocket sock, char buffer[], int len) {
     }
 
     // Set up destination address
-    struct sockaddr_in dst;
+    sockaddr_in dst{};
     dst.sin_family = AF_INET;
-    dst.sin_port = htons(sock.xpPort);
-    inet_pton(AF_INET, sock.xpIP, &dst.sin_addr.s_addr);
+    dst.sin_port = htons(xpcSocket_.xplanePort);
+    inet_pton(AF_INET, xpcSocket_.xplaneAddr.c_str(), &dst.sin_addr.s_addr);
 
-    int result = sendto(sock.sock, buffer, len, 0, (const struct sockaddr *)&dst, sizeof(dst));
+    int result = sendto(xpcSocket_.datagramSocket, buffer, len, 0, (const struct sockaddr *)&dst, sizeof(dst));
     if (result < 0) {
         printError("sendUDP", "Send operation failed.");
         return -2;
@@ -173,7 +239,7 @@ int sendUDP(XPCSocket sock, char buffer[], int len) {
 /// \param buffer A pointer to the location to store the data.
 /// \param len    The number of bytes to read.
 /// \returns      If an error occurs, a negative number. Otherwise, the number of bytes read.
-int readUDP(XPCSocket sock, char buffer[], int len) {
+int XPlaneConnect::readUDP(char buffer[], int len) {
     // For readUDP, use the select command - minimum timeout of 0 makes it polling.
     // Without this, playback may become choppy due to process blocking
 
@@ -184,9 +250,9 @@ int readUDP(XPCSocket sock, char buffer[], int len) {
 
     // Setup for Select
     FD_ZERO(&stReadFDS);
-    FD_SET(sock.sock, &stReadFDS);
+    FD_SET(xpcSocket_.datagramSocket, &stReadFDS);
     FD_ZERO(&stExceptFDS);
-    FD_SET(sock.sock, &stExceptFDS);
+    FD_SET(xpcSocket_.datagramSocket, &stExceptFDS);
 
     // Set timeout period for select to 0.05 sec = 50 milliseconds = 50,000 microseconds (0 makes it polling)
     // TO DO - This could be set to 0 if a message handling system were implemented, like in the plugin.
@@ -194,7 +260,7 @@ int readUDP(XPCSocket sock, char buffer[], int len) {
     timeout.tv_usec = 50000;
 
     // Select Command
-    int status = select(sock.sock + 1, &stReadFDS, NULL, &stExceptFDS, &timeout);
+    int status = select(xpcSocket_.datagramSocket + 1, &stReadFDS, NULL, &stExceptFDS, &timeout);
     if (status < 0) {
         printError("readUDP", "Select command error");
         return -1;
@@ -205,7 +271,7 @@ int readUDP(XPCSocket sock, char buffer[], int len) {
     }
 
     // If no error: Read Data
-    status = recv(sock.sock, buffer, len, 0);
+    status = recv(xpcSocket_.datagramSocket, buffer, len, 0);
     if (status < 0) {
         printError("readUDP", "Error reading socket");
     }
@@ -218,23 +284,23 @@ int readUDP(XPCSocket sock, char buffer[], int len) {
 /*****************************************************************************/
 /****                      Configuration functions                        ****/
 /*****************************************************************************/
-int setCONN(XPCSocket *sock, unsigned short port) {
+int XPlaneConnect::setCONN(unsigned short port) {
     // Set up command
     char buffer[32] = "CONN";
     memcpy(&buffer[5], &port, 2);
 
     // Send command
-    if (sendUDP(*sock, buffer, 7) < 0) {
+    if (sendUDP(buffer, 7) < 0) {
         printError("setCONN", "Failed to send command");
         return -1;
     }
 
     // Switch socket
-    closeUDP(*sock);
-    *sock = aopenUDP(sock->xpIP, sock->xpPort, port);
+    closeUDP(xpcSocket_);
+    xpcSocket_ = aopenUDP(xpcSocket_.xplaneAddr, xpcSocket_.xplanePort, port);
 
     // Read response
-    int result = readUDP(*sock, buffer, 32);
+    int result = readUDP(buffer, 32);
 
     if (result <= 0) {
         printError("setCONN", "Failed to read response");
@@ -248,7 +314,7 @@ int setCONN(XPCSocket *sock, unsigned short port) {
     return -3;
 }
 
-int pauseSim(XPCSocket sock, char pause) {
+int XPlaneConnect::pauseSim(char pause) {
     // Validte input
     if (pause < 0 || (pause > 2 && pause < 100) || (pause > 119 && pause < 200) || pause > 219) {
         printError("pauseSim", "Invalid argument: %i", pause);
@@ -260,7 +326,7 @@ int pauseSim(XPCSocket sock, char pause) {
     buffer[5] = pause;
 
     // Send command
-    if (sendUDP(sock, buffer, 6) < 0) {
+    if (sendUDP(buffer, 6) < 0) {
         printError("pauseSim", "Failed to send command");
         return -1;
     }
@@ -273,7 +339,7 @@ int pauseSim(XPCSocket sock, char pause) {
 /*****************************************************************************/
 /****                    X-Plane UDP Data functions                       ****/
 /*****************************************************************************/
-int sendDATA(XPCSocket sock, float data[][9], int rows) {
+int XPlaneConnect::sendDATA(float data[][9], int rows) {
     // Preconditions
     // There are only 134 DATA rows in X-Plane. Realistically, clients probably
     // shouldn't be trying to set nearly this much data at once anyway.
@@ -293,14 +359,14 @@ int sendDATA(XPCSocket sock, float data[][9], int rows) {
         memcpy(&buffer[9 + i * step], &data[i][1], 8 * sizeof(float));
     }
     // Send command
-    if (sendUDP(sock, buffer, len) < 0) {
+    if (sendUDP(buffer, len) < 0) {
         printError("sendDATA", "Failed to send command");
         return -2;
     }
     return 0;
 }
 
-int readDATA(XPCSocket sock, float data[][9], int rows) {
+int XPlaneConnect::readDATA(float data[][9], int rows) {
     // Preconditions
     // There are only 134 DATA rows in X-Plane. Realistically, clients probably
     // shouldn't be trying to read nearly this much data at once anyway.
@@ -312,7 +378,7 @@ int readDATA(XPCSocket sock, float data[][9], int rows) {
 
     // Read data
     char buffer[4829] = {0};
-    int result = readUDP(sock, buffer, 4829);
+    int result = readUDP(buffer, 4829);
     if (result <= 0) {
         printError("readDATA", "Failed to read from socket.");
         return -1;
@@ -342,11 +408,11 @@ int readDATA(XPCSocket sock, float data[][9], int rows) {
 /*****************************************************************************/
 /****                          DREF functions                             ****/
 /*****************************************************************************/
-int sendDREF(XPCSocket sock, const char *dref, float values[], int size) {
-    return sendDREFs(sock, &dref, &values, &size, 1);
+int XPlaneConnect::sendDREF(const char *dref, float values[], int size) {
+    return sendDREFs(&dref, &values, &size, 1);
 }
 
-int sendDREFs(XPCSocket sock, const char *drefs[], float *values[], int sizes[], int count) {
+int XPlaneConnect::sendDREFs(const char *drefs[], float *values[], int sizes[], int count) {
     // Setup command
     // Max size is technically unlimited.
     char buffer[65536] = "DREF";
@@ -378,14 +444,14 @@ int sendDREFs(XPCSocket sock, const char *drefs[], float *values[], int sizes[],
     }
 
     // Send command
-    if (sendUDP(sock, buffer, pos) < 0) {
+    if (sendUDP(buffer, pos) < 0) {
         printError("setDREF", "Failed to send command");
         return -3;
     }
     return 0;
 }
 
-int sendDREFRequest(XPCSocket sock, const char *drefs[], unsigned char count) {
+int XPlaneConnect::sendDREFRequest(const char *drefs[], unsigned char count) {
     // Setup command
     // 6 byte header + potentially 255 drefs, each 256 chars long.
     // Easiest to just round to an even 2^16.
@@ -404,16 +470,16 @@ int sendDREFRequest(XPCSocket sock, const char *drefs[], unsigned char count) {
         len += drefLen;
     }
     // Send Command
-    if (sendUDP(sock, buffer, len) < 0) {
+    if (sendUDP(buffer, len) < 0) {
         printError("getDREFs", "Failed to send command");
         return -2;
     }
     return 0;
 }
 
-int getDREFResponse(XPCSocket sock, float *values[], unsigned char count, int sizes[]) {
+int XPlaneConnect::getDREFResponse(float *values[], unsigned char count, int sizes[]) {
     char buffer[65536];
-    int result = readUDP(sock, buffer, 65536);
+    int result = readUDP(buffer, 65536);
 
     if (result < 0) {
 #ifdef _WIN32
@@ -450,13 +516,13 @@ int getDREFResponse(XPCSocket sock, float *values[], unsigned char count, int si
     return 0;
 }
 
-int getDREF(XPCSocket sock, const char *dref, float values[], int *size) {
-    return getDREFs(sock, &dref, &values, 1, size);
+int XPlaneConnect::getDREF(const char *dref, float values[], int *size) {
+    return getDREFs(&dref, &values, 1, size);
 }
 
-int getDREFs(XPCSocket sock, const char *drefs[], float *values[], unsigned char count, int sizes[]) {
+int XPlaneConnect::getDREFs(const char *drefs[], float *values[], unsigned char count, int sizes[]) {
     // Send Command
-    int result = sendDREFRequest(sock, drefs, count);
+    int result = sendDREFRequest(drefs, count);
     if (result < 0) {
         // An error ocurred while sending.
         // sendDREFRequest will print an error message, so just return.
@@ -464,7 +530,7 @@ int getDREFs(XPCSocket sock, const char *drefs[], float *values[], unsigned char
     }
 
     // Read Response
-    if (getDREFResponse(sock, values, count, sizes) < 0) {
+    if (getDREFResponse(values, count, sizes) < 0) {
         // An error ocurred while reading the response.
         // getDREFResponse will print an error message, so just return.
         return -2;
@@ -478,13 +544,13 @@ int getDREFs(XPCSocket sock, const char *drefs[], float *values[], unsigned char
 /*****************************************************************************/
 /****                          POSI functions                             ****/
 /*****************************************************************************/
-int getPOSI(XPCSocket sock, double values[7], char ac) {
+int XPlaneConnect::getPOSI(double values[7], char ac) {
     // Setup send command
     char buffer[6] = "GETP";
     buffer[5] = ac;
 
     // Send command
-    if (sendUDP(sock, buffer, 6) < 0) {
+    if (sendUDP(buffer, 6) < 0) {
         printError("getPOSI", "Failed to send command.");
         return -1;
     }
@@ -492,7 +558,7 @@ int getPOSI(XPCSocket sock, double values[7], char ac) {
     // Get response
     char readBuffer[46];
     float f[7];
-    int readResult = readUDP(sock, readBuffer, 46);
+    int readResult = readUDP(readBuffer, 46);
 
     // Copy response into values
     if (readResult < 0) {
@@ -523,7 +589,7 @@ int getPOSI(XPCSocket sock, double values[7], char ac) {
     return 0;
 }
 
-int sendPOSI(XPCSocket sock, double values[], int size, char ac) {
+int XPlaneConnect::sendPOSI(double values[], int size, char ac) {
     // Validate input
     if (ac < 0 || ac > 20) {
         printError("sendPOSI", "aircraft should be a value between 0 and 20.");
@@ -558,7 +624,7 @@ int sendPOSI(XPCSocket sock, double values[], int size, char ac) {
     }
 
     // Send Command
-    if (sendUDP(sock, buffer, 46) < 0) {
+    if (sendUDP(buffer, 46) < 0) {
         printError("sendPOSI", "Failed to send command");
         return -3;
     }
@@ -571,24 +637,24 @@ int sendPOSI(XPCSocket sock, double values[], int size, char ac) {
 /*****************************************************************************/
 /****                          TERR functions                             ****/
 /*****************************************************************************/
-int sendTERRRequest(XPCSocket sock, double posi[3], char ac) {
+int XPlaneConnect::sendTERRRequest(double posi[3], char ac) {
     // Setup send command
     char buffer[30] = "GETT";
     buffer[5] = ac;
     memcpy(&buffer[6], posi, 3 * sizeof(double));
 
     // Send command
-    if (sendUDP(sock, buffer, 30) < 0) {
+    if (sendUDP(buffer, 30) < 0) {
         printError("getTERR", "Failed to send command.");
         return -1;
     }
     return 0;
 }
 
-int getTERRResponse(XPCSocket sock, double values[11], char ac) {
+int XPlaneConnect::getTERRResponse(double values[11], char ac) {
     // Get response
     char readBuffer[62];
-    int readResult = readUDP(sock, readBuffer, 62);
+    int readResult = readUDP(readBuffer, 62);
     if (readResult < 0) {
         printError("getTERR", "Failed to read response.");
         return -2;
@@ -615,7 +681,7 @@ int getTERRResponse(XPCSocket sock, double values[11], char ac) {
     return 0;
 }
 
-int sendPOST(XPCSocket sock, double posi[], int size, double values[11], char ac) {
+int XPlaneConnect::sendPOST(double posi[], int size, double values[11], char ac) {
     // Validate input
     if (ac < 0 || ac > 20) {
         printError("sendPOST", "aircraft should be a value between 0 and 20.");
@@ -650,13 +716,13 @@ int sendPOST(XPCSocket sock, double posi[], int size, double values[11], char ac
     }
 
     // Send Command
-    if (sendUDP(sock, buffer, 46) < 0) {
+    if (sendUDP(buffer, 46) < 0) {
         printError("sendPOST", "Failed to send command");
         return -3;
     }
 
     // Read Response
-    int result = getTERRResponse(sock, values, ac);
+    int result = getTERRResponse(values, ac);
     if (result < 0) {
         // A error ocurred while reading the response.
         // getTERRResponse will print an error message, so just return.
@@ -665,9 +731,9 @@ int sendPOST(XPCSocket sock, double posi[], int size, double values[11], char ac
     return 0;
 }
 
-int getTERR(XPCSocket sock, double posi[3], double values[11], char ac) {
+int XPlaneConnect::getTERR(double posi[3], double values[11], char ac) {
     // Send Command
-    int result = sendTERRRequest(sock, posi, ac);
+    int result = sendTERRRequest(posi, ac);
     if (result < 0) {
         // An error ocurred while sending.
         // sendTERRRequest will print an error message, so just return.
@@ -675,7 +741,7 @@ int getTERR(XPCSocket sock, double posi[3], double values[11], char ac) {
     }
 
     // Read Response
-    result = getTERRResponse(sock, values, ac);
+    result = getTERRResponse(values, ac);
     if (result < 0) {
         // An error ocurred while reading the response.
         // getTERRResponse will print an error message, so just return.
@@ -690,20 +756,20 @@ int getTERR(XPCSocket sock, double posi[3], double values[11], char ac) {
 /*****************************************************************************/
 /****                          CTRL functions                             ****/
 /*****************************************************************************/
-int getCTRL(XPCSocket sock, float values[7], char ac) {
+int XPlaneConnect::getCTRL(float values[7], char ac) {
     // Setup send command
     char buffer[6] = "GETC";
     buffer[5] = ac;
 
     // Send command
-    if (sendUDP(sock, buffer, 6) < 0) {
+    if (sendUDP(buffer, 6) < 0) {
         printError("getCTRL", "Failed to send command.");
         return -1;
     }
 
     // Get response
     char readBuffer[31];
-    int readResult = readUDP(sock, readBuffer, 31);
+    int readResult = readUDP(readBuffer, 31);
     if (readResult < 0) {
         printError("getCTRL", "Failed to read response.");
         return -2;
@@ -721,7 +787,7 @@ int getCTRL(XPCSocket sock, float values[7], char ac) {
     return 0;
 }
 
-int sendCTRL(XPCSocket sock, float values[], int size, char ac) {
+int XPlaneConnect::sendCTRL(float values[], int size, char ac) {
     // Validate input
     if (ac < 0 || ac > 20) {
         printError("sendCTRL", "aircraft should be a value between 0 and 20.");
@@ -754,7 +820,7 @@ int sendCTRL(XPCSocket sock, float values[], int size, char ac) {
     *((float *)(buffer + 27)) = size == 7 ? values[6] : -998;
 
     // Send Command
-    if (sendUDP(sock, buffer, 31) < 0) {
+    if (sendUDP(buffer, 31) < 0) {
         printError("sendCTRL", "Failed to send command");
         return -3;
     }
@@ -767,7 +833,7 @@ int sendCTRL(XPCSocket sock, float values[], int size, char ac) {
 /*****************************************************************************/
 /****                        Drawing functions                            ****/
 /*****************************************************************************/
-int sendTEXT(XPCSocket sock, char *msg, int x, int y) {
+int XPlaneConnect::sendTEXT(char *msg, int x, int y) {
     if (msg == NULL) {
         msg = "";
     }
@@ -797,16 +863,16 @@ int sendTEXT(XPCSocket sock, char *msg, int x, int y) {
     strncpy(buffer + 14, msg, msgLen);
 
     // Send Command
-    if (sendUDP(sock, buffer, len) < 0) {
+    if (sendUDP(buffer, len) < 0) {
         printError("sendTEXT", "Failed to send command");
         return -3;
     }
     return 0;
 }
 
-int sendWYPT(XPCSocket sock, WYPT_OP op, float points[], int count) {
+int XPlaneConnect::sendWYPT(WYPT_OP op, float points[], int count) {
     // Input Validation
-    if (op < XPC_WYPT_ADD || op > XPC_WYPT_CLR) {
+    if (op < WYPT_OP::XPC_WYPT_ADD || op > WYPT_OP::XPC_WYPT_CLR) {
         printError("sendWYPT", "Unrecognized operation.");
         return -1;
     }
@@ -824,7 +890,7 @@ int sendWYPT(XPCSocket sock, WYPT_OP op, float points[], int count) {
     memcpy(buffer + 7, points, ptLen);
 
     // Send Command
-    if (sendUDP(sock, buffer, 7 + 12 * count) < 0) {
+    if (sendUDP(buffer, 7 + 12 * count) < 0) {
         printError("sendWYPT", "Failed to send command");
         return -2;
     }
@@ -837,19 +903,19 @@ int sendWYPT(XPCSocket sock, WYPT_OP op, float points[], int count) {
 /*****************************************************************************/
 /****                          View functions                             ****/
 /*****************************************************************************/
-int sendVIEW(XPCSocket sock, VIEW_TYPE view) {
+int XPlaneConnect::sendVIEW(VIEW_TYPE view) {
     // Validate Input
-    if (view < XPC_VIEW_FORWARDS || view > XPC_VIEW_FULLSCREENNOHUD) {
+    if (view < VIEW_TYPE::XPC_VIEW_FORWARDS || view > VIEW_TYPE::XPC_VIEW_FULLSCREENNOHUD) {
         printError("sendVIEW", "Unrecognized view");
         return -1;
     }
 
     // Setup Command
     char buffer[9] = "VIEW";
-    *((int *)(buffer + 5)) = view;
+    *((int *)(buffer + 5)) = static_cast<int>(view);
 
     // Send Command
-    if (sendUDP(sock, buffer, 9) < 0) {
+    if (sendUDP(buffer, 9) < 0) {
         printError("sendVIEW", "Failed to send command");
         return -2;
     }
@@ -862,7 +928,7 @@ int sendVIEW(XPCSocket sock, VIEW_TYPE view) {
 /*****************************************************************************/
 /****                          Comm functions                             ****/
 /*****************************************************************************/
-int sendCOMM(XPCSocket sock, const char *comm) {
+int XPlaneConnect::sendCOMM(const char *comm) {
     // Setup command
     // Max size is technically unlimited.
     unsigned char buffer[65536] = "COMM";
@@ -883,7 +949,7 @@ int sendCOMM(XPCSocket sock, const char *comm) {
     pos += commLen;
 
     // Send command
-    if (sendUDP(sock, (char *)buffer, pos) < 0) {
+    if (sendUDP((char *)buffer, pos) < 0) {
         printError("setDREF", "Failed to send command");
         return -3;
     }
