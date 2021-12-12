@@ -34,33 +34,81 @@
 
 #include "xplane-connect-cpp/xplane_connect.h"
 
-//#include <sys/types.h>
+#ifdef _WIN32
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#pragma comment(lib, "ws2_32.lib") // Need to link with Ws2_32.lib
 
-//#ifdef _WIN32
-//#include <ctime>
-//#else
-//#include <sys/time.h>
-//#endif
+#else //  _WIN32
+/* Assume that any non-Windows platform uses POSIX-style sockets instead. */
+#include <arpa/inet.h>
+#include <netdb.h> // Needed for getaddrinfo() and freeaddrinfo()
+#include <sys/socket.h>
+#include <sys/time.h>
+#include <unistd.h> // Needed for close()
 
-//#include <cmath>
+#endif //  _WIN32
 
 #include <cstdarg>
+#include <cstddef>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 
+#include <memory>
 #include <string>
 #include <utility>
 
-// Low Level UDP Functions
-XPCSocket aopenUDP(std::string xpIP, unsigned short xpPort, unsigned short port);
-void closeUDP(const XPCSocket &sock);
+#include "helper.h"
+#include "xplane-connect-cpp/xplane_exceptions.h"
 
-// Default X-Plane IP and Port
-constexpr const char *kXPCDefaultXplaneAddr{"localhost"};
+namespace xpc {
+
+// Default X-Plane Port
 constexpr std::uint16_t kXPCDefaultXplanePort{49009};
-constexpr std::uint16_t kXPCDefaultLocalPort{0};
+
+struct XPlaneConnect::XPCSocket {
+    // X-Plane IP and Port
+    std::string xplaneIPv4Addr;
+    std::uint16_t xplanePort{0};
+    std::uint16_t localPort{0};
+
+#ifdef _WIN32
+    SOCKET datagramSocket{INVALID_SOCKET};
+#else  //  _WIN32
+    int datagramSocket{-1};
+#endif //  _WIN32
+};
+
+void winSockInit() {
+#ifdef _WIN32
+    /* Use the MAKEWORD(lowbyte, highbyte) macro declared in Windef.h */
+    WORD wVersionRequested = MAKEWORD(2, 2);
+    WSADATA wsaData{};
+    int err = WSAStartup(wVersionRequested, &wsaData);
+    if (err != 0) {
+        throw WinSockInitError{
+            ComposeErrorMessage(__FILE__, __func__, __LINE__, "WSAStartup failed with error: " + std::to_string(err))};
+    }
+    /* Confirm that the WinSock DLL supports 2.2.*/
+    if (LOBYTE(wsaData.wVersion) != 2 || HIBYTE(wsaData.wVersion) != 2) {
+        WSACleanup();
+        throw WinSockInitError{
+            ComposeErrorMessage(__FILE__, __func__, __LINE__, "Could not find a usable version of Winsock.dll")};
+    }
+/* The Winsock DLL is acceptable. Proceed to use it. */
+/* Call WSACleanup when done using the Winsock dll */
+#endif //  _WIN32
+}
+
+int winSockQuit() {
+#ifdef _WIN32
+    return WSACleanup();
+#else  //  _WIN32
+    return 0;
+#endif //  _WIN32
+}
 
 void printError(const char *functionName, const char *format, ...) {
     va_list args;
@@ -83,37 +131,41 @@ void printError(const char *functionName, const char *format, ...) {
 /// \param xpPort The port of the X-Plane Connect plugin is listening on. Usually 49009.
 /// \param port   The local port to use when sending and receiving data from XPC.
 /// \returns      An XPCSocket struct representing the newly created connection.
-XPCSocket aopenUDP(std::string xpIP, unsigned short xpPort, unsigned short port) {
-    XPCSocket sock;
+std::unique_ptr<XPlaneConnect::XPCSocket> XPlaneConnect::openUDP(std::string xpIP, unsigned short xpPort,
+                                                                 unsigned short port) {
+    // Set X-Plane Port and IP
+    if (xpIP.empty() || xpIP == "localhost") {
+        xpIP = "127.0.0.1";
+    }
+    auto pXPCSocket = std::make_unique<XPCSocket>();
+    pXPCSocket->xplaneIPv4Addr = std::move(xpIP);
+    pXPCSocket->xplanePort = xpPort == 0 ? 49009 : xpPort;
+
+    try {
+        winSockInit();
+    } catch (const WinSockInitError &ex) {
+        throw OpenUDPError{
+            ComposeErrorMessage(__FILE__, __func__, __LINE__, "WSAStartup failed: " + std::string{ex.what()})};
+    }
+
+    pXPCSocket->datagramSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+#ifdef _WIN32
+    if (pXPCSocket->datagramSocket == INVALID_SOCKET) {
+        throw OpenUDPError{ComposeErrorMessage(__FILE__, __func__, __LINE__, "Socket creation failed")};
+    }
+#else  //  _WIN32
+    if (pXPCSocket->datagramSocket == -1) {
+        throw OpenUDPError{ComposeErrorMessage(__FILE__, __func__, __LINE__, "Socket creation failed")};
+    }
+#endif //  _WIN32
 
     // Setup Port
     sockaddr_in recvaddr{};
     recvaddr.sin_family = AF_INET;
     recvaddr.sin_addr.s_addr = INADDR_ANY;
     recvaddr.sin_port = htons(port);
-
-    // Set X-Plane Port and IP
-    if (xpIP == "localhost") {
-        xpIP = "127.0.0.1";
-    }
-    sock.xplaneAddr = std::move(xpIP);
-    sock.xplanePort = xpPort == 0 ? 49009 : xpPort;
-
-#ifdef _WIN32
-    WSADATA wsa;
-    if (WSAStartup(MAKEWORD(2, 2), &wsa) != 0) {
-        printError("OpenUDP", "WSAStartup failed");
-        exit(EXIT_FAILURE);
-    }
-#endif
-
-    if ((sock.datagramSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP)) == -1) {
-        printError("OpenUDP", "Socket creation failed");
-        exit(EXIT_FAILURE);
-    }
-    if (bind(sock.datagramSocket, reinterpret_cast<sockaddr *>(&recvaddr), sizeof(recvaddr)) == -1) {
-        printError("OpenUDP", "Socket bind failed");
-        exit(EXIT_FAILURE);
+    if (bind(pXPCSocket->datagramSocket, reinterpret_cast<sockaddr *>(&recvaddr), sizeof(recvaddr)) == -1) {
+        throw OpenUDPError{ComposeErrorMessage(__FILE__, __func__, __LINE__, "Socket bind failed")};
     }
 
     // Set socket timeout period for sendUDP to 1 millisecond
@@ -121,47 +173,49 @@ XPCSocket aopenUDP(std::string xpIP, unsigned short xpPort, unsigned short port)
 #ifdef _WIN32
     // Minimum socket timeout in Windows is 1 millisecond (0 makes it blocking)
     DWORD timeout = 1;
-#else
+#else  //  _WIN32
     // Set socket timeout to 1 millisecond = 1,000 microseconds to make it the same as Windows (0 makes it blocking)
     struct timeval timeout;
     timeout.tv_sec = 0;
     timeout.tv_usec = 1000;
-#endif
-    if (setsockopt(sock.datagramSocket, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<char *>(&timeout), sizeof(timeout)) <
-        0) {
-        printError("OpenUDP", "Failed to set timeout");
+#endif //  _WIN32
+    if (setsockopt(pXPCSocket->datagramSocket, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<char *>(&timeout),
+                   sizeof(timeout)) < 0) {
+        throw OpenUDPError{ComposeErrorMessage(__FILE__, __func__, __LINE__, "Failed to set timeout")};
     }
-    return sock;
+    return pXPCSocket;
 }
 
 /// Closes the specified connection and releases resources associated with it.
 ///
 /// \param sock The socket to close.
-void closeUDP(const XPCSocket &sock) {
+int XPlaneConnect::closeUDP() {
 #ifdef _WIN32
-    int result = closesocket(sock.datagramSocket);
-#else
-    int result = close(datagramSocket.datagramSocket);
-#endif
-    if (result < 0) {
-        printError("closeUDP", "Failed to close socket");
-        exit(EXIT_FAILURE);
+    int status = shutdown(pXPCSocket_->datagramSocket, SD_BOTH);
+    if (status == 0) {
+        status = closesocket(pXPCSocket_->datagramSocket);
     }
+#else  //  _WIN32
+    int status = shutdown(pXPCSocket_->datagramSocket, SHUT_RDWR);
+    if (status == 0) {
+        status = close(pXPCSocket_->datagramSocket);
+    }
+#endif //  _WIN32
+    return status;
 }
 
 /// Initializes a new instance of the {\code XPlaneConnect} class using default ports and assuming X-Plane is
 /// running on the local machine.
 ///
 /// \throws SocketException If this instance is unable to bind to the default receive port.
-XPlaneConnect::XPlaneConnect() : XPlaneConnect(kXPCDefaultXplaneAddr) {}
+XPlaneConnect::XPlaneConnect() : XPlaneConnect("") {}
 
 /// Initializes a new instance of the {\code XPlaneConnect} class using the specified X-Plane host.
 ///
 /// \param xplaneAddr The network host on which X-Plane is running.
 /// \throws java.net.SocketException      If this instance is unable to bind to the specified port.
 /// \throws java.net.UnknownHostException If the specified hostname can not be resolved.
-XPlaneConnect::XPlaneConnect(std::string xplaneAddr)
-    : XPlaneConnect(std::move(xplaneAddr), kXPCDefaultXplanePort, kXPCDefaultLocalPort) {}
+XPlaneConnect::XPlaneConnect(std::string xplaneAddr) : XPlaneConnect(std::move(xplaneAddr), kXPCDefaultXplanePort, 0) {}
 
 /// Initializes a new instance of the {\code XPlaneConnect} class using the specified ports and X-Plane host.
 ///
@@ -171,37 +225,42 @@ XPlaneConnect::XPlaneConnect(std::string xplaneAddr)
 /// \throws java.net.SocketException      If this instance is unable to bind to the specified port.
 /// \throws java.net.UnknownHostException If the specified hostname can not be resolved.
 XPlaneConnect::XPlaneConnect(std::string xplaneAddr, std::uint16_t xplanePort, std::uint16_t localPort)
-    : xpcSocket_{aopenUDP(std::move(xplaneAddr), xplanePort, localPort)} {}
+    : pXPCSocket_{openUDP(std::move(xplaneAddr), xplanePort, localPort)} {}
 
 /// Closes the specified connection and releases resources associated with it.
-XPlaneConnect::~XPlaneConnect() { closeUDP(xpcSocket_); }
+XPlaneConnect::~XPlaneConnect() {
+    closeUDP();
+    winSockQuit();
+}
 
 /// Gets the hostname of the X-Plane host.
 ///
 /// @return The hostname of the X-Plane host.
-const std::string &XPlaneConnect::getXPlaneAddr() const noexcept { return xpcSocket_.xplaneAddr; }
+const std::string &XPlaneConnect::getXPlaneAddr() const noexcept { return pXPCSocket_->xplaneIPv4Addr; }
 
 /// Sets the hostname of the X-Plane host.
 ///
 /// @param host The new hostname of the X-Plane host machine.
 /// @throws UnknownHostException {@code host} is not valid.
-void XPlaneConnect::setXplaneAddr(std::string xplaneAddr) noexcept { xpcSocket_.xplaneAddr = std::move(xplaneAddr); }
+void XPlaneConnect::setXplaneAddr(std::string xplaneAddr) noexcept {
+    pXPCSocket_->xplaneIPv4Addr = std::move(xplaneAddr);
+}
 
 /// Gets the port on which the client sends data to X-Plane.
 ///
 /// @return The outgoing port number.
-std::uint16_t XPlaneConnect::getXPlanePort() const noexcept { return xpcSocket_.xplanePort; }
+std::uint16_t XPlaneConnect::getXPlanePort() const noexcept { return pXPCSocket_->xplanePort; }
 
 /// Sets the port on which the client sends data to X-Plane
 ///
 /// @param port The new outgoing port number.
 /// @throws IllegalArgumentException If {@code port} is not a valid port number.
-void XPlaneConnect::setXPlanePort(std::uint16_t xplanePort) noexcept { xpcSocket_.xplanePort = xplanePort; }
+void XPlaneConnect::setXPlanePort(std::uint16_t xplanePort) noexcept { pXPCSocket_->xplanePort = xplanePort; }
 
 /// Gets the port on which the client receives data from the plugin.
 ///
 /// @return The incoming port number.
-std::uint16_t XPlaneConnect::getRecvPort() const noexcept { return xpcSocket_.localPort; }
+std::uint16_t XPlaneConnect::getRecvPort() const noexcept { return pXPCSocket_->localPort; }
 
 /// Sends the given data to the X-Plane plugin.
 ///
@@ -219,10 +278,10 @@ int XPlaneConnect::sendUDP(char buffer[], int len) {
     // Set up destination address
     sockaddr_in dst{};
     dst.sin_family = AF_INET;
-    dst.sin_port = htons(xpcSocket_.xplanePort);
-    inet_pton(AF_INET, xpcSocket_.xplaneAddr.c_str(), &dst.sin_addr.s_addr);
+    dst.sin_port = htons(pXPCSocket_->xplanePort);
+    inet_pton(AF_INET, pXPCSocket_->xplaneIPv4Addr.c_str(), &dst.sin_addr.s_addr);
 
-    int result = sendto(xpcSocket_.datagramSocket, buffer, len, 0, (const struct sockaddr *)&dst, sizeof(dst));
+    int result = sendto(pXPCSocket_->datagramSocket, buffer, len, 0, (const struct sockaddr *)&dst, sizeof(dst));
     if (result < 0) {
         printError("sendUDP", "Send operation failed.");
         return -2;
@@ -246,13 +305,13 @@ int XPlaneConnect::readUDP(char buffer[], int len) {
     // Definitions
     fd_set stReadFDS;
     fd_set stExceptFDS;
-    struct timeval timeout;
+    timeval timeout{};
 
     // Setup for Select
     FD_ZERO(&stReadFDS);
-    FD_SET(xpcSocket_.datagramSocket, &stReadFDS);
+    FD_SET(pXPCSocket_->datagramSocket, &stReadFDS);
     FD_ZERO(&stExceptFDS);
-    FD_SET(xpcSocket_.datagramSocket, &stExceptFDS);
+    FD_SET(pXPCSocket_->datagramSocket, &stExceptFDS);
 
     // Set timeout period for select to 0.05 sec = 50 milliseconds = 50,000 microseconds (0 makes it polling)
     // TO DO - This could be set to 0 if a message handling system were implemented, like in the plugin.
@@ -260,7 +319,7 @@ int XPlaneConnect::readUDP(char buffer[], int len) {
     timeout.tv_usec = 50000;
 
     // Select Command
-    int status = select(xpcSocket_.datagramSocket + 1, &stReadFDS, NULL, &stExceptFDS, &timeout);
+    int status = select(static_cast<int>(pXPCSocket_->datagramSocket + 1), &stReadFDS, nullptr, &stExceptFDS, &timeout);
     if (status < 0) {
         printError("readUDP", "Select command error");
         return -1;
@@ -271,7 +330,7 @@ int XPlaneConnect::readUDP(char buffer[], int len) {
     }
 
     // If no error: Read Data
-    status = recv(xpcSocket_.datagramSocket, buffer, len, 0);
+    status = recv(pXPCSocket_->datagramSocket, buffer, len, 0);
     if (status < 0) {
         printError("readUDP", "Error reading socket");
     }
@@ -296,8 +355,8 @@ int XPlaneConnect::setCONN(unsigned short port) {
     }
 
     // Switch socket
-    closeUDP(xpcSocket_);
-    xpcSocket_ = aopenUDP(xpcSocket_.xplaneAddr, xpcSocket_.xplanePort, port);
+    closeUDP();
+    pXPCSocket_ = openUDP(pXPCSocket_->xplaneIPv4Addr, pXPCSocket_->xplanePort, port);
 
     // Read response
     int result = readUDP(buffer, 32);
@@ -408,9 +467,7 @@ int XPlaneConnect::readDATA(float data[][9], int rows) {
 /*****************************************************************************/
 /****                          DREF functions                             ****/
 /*****************************************************************************/
-int XPlaneConnect::sendDREF(const char *dref, float values[], int size) {
-    return sendDREFs(&dref, &values, &size, 1);
-}
+int XPlaneConnect::sendDREF(const char *dref, float values[], int size) { return sendDREFs(&dref, &values, &size, 1); }
 
 int XPlaneConnect::sendDREFs(const char *drefs[], float *values[], int sizes[], int count) {
     // Setup command
@@ -460,7 +517,7 @@ int XPlaneConnect::sendDREFRequest(const char *drefs[], unsigned char count) {
     int len = 6;
     int i; // iterator
     for (i = 0; i < count; ++i) {
-        size_t drefLen = strnlen(drefs[i], 256);
+        std::size_t drefLen = strnlen(drefs[i], 256);
         if (drefLen > 255) {
             printError("getDREFs", "dref %d is too long.", i);
             return -1;
@@ -516,9 +573,7 @@ int XPlaneConnect::getDREFResponse(float *values[], unsigned char count, int siz
     return 0;
 }
 
-int XPlaneConnect::getDREF(const char *dref, float values[], int *size) {
-    return getDREFs(&dref, &values, 1, size);
-}
+int XPlaneConnect::getDREF(const char *dref, float values[], int *size) { return getDREFs(&dref, &values, 1, size); }
 
 int XPlaneConnect::getDREFs(const char *drefs[], float *values[], unsigned char count, int sizes[]) {
     // Send Command
@@ -837,7 +892,7 @@ int XPlaneConnect::sendTEXT(char *msg, int x, int y) {
     if (msg == NULL) {
         msg = "";
     }
-    size_t msgLen = strnlen(msg, 255);
+    std::size_t msgLen = strnlen(msg, 255);
     // Input Validation
     if (x < -1) {
         printError("sendTEXT", "x should be positive (or -1 for default).");
@@ -856,7 +911,7 @@ int XPlaneConnect::sendTEXT(char *msg, int x, int y) {
     // Setup command
     // 5 byte header + 8 byte position + up to 256 byte message
     char buffer[269] = "TEXT";
-    size_t len = 14 + msgLen;
+    std::size_t len = 14 + msgLen;
     memcpy(buffer + 5, &x, sizeof(int));
     memcpy(buffer + 9, &y, sizeof(int));
     buffer[13] = (unsigned char)msgLen;
@@ -886,7 +941,7 @@ int XPlaneConnect::sendWYPT(WYPT_OP op, float points[], int count) {
     char buffer[3067] = "WYPT";
     buffer[5] = (unsigned char)op;
     buffer[6] = (unsigned char)count;
-    size_t ptLen = sizeof(float) * 3 * count;
+    std::size_t ptLen = sizeof(float) * 3 * count;
     memcpy(buffer + 7, points, ptLen);
 
     // Send Command
@@ -958,3 +1013,5 @@ int XPlaneConnect::sendCOMM(const char *comm) {
 /*****************************************************************************/
 /****                        End Comm functions                           ****/
 /*****************************************************************************/
+
+} // namespace xpc

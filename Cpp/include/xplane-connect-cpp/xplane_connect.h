@@ -22,37 +22,26 @@
 //     TO THE EXTENT PERMITTED BY LAW.  RECIPIENT'S SOLE REMEDY FOR ANY SUCH MATTER SHALL BE THE
 //     IMMEDIATE, UNILATERAL TERMINATION OF THIS AGREEMENT.
 
+//  X-Plane Connect Client
+//
+//  DESCRIPTION
+//      Communicates with the XPC plugin to facilitate controling and gathering data from X-Plane.
+//
+//  INSTRUCTIONS
+//      See Readme.md in the root of this repository or the wiki hosted on GitHub at
+//      https://github.com/nasa/XPlaneConnect/wiki for requirements, installation instructions,
+//      and detailed documentation.
+
 #ifndef INCLUDE_XPLANE_CONNECT_CPP_XPLANE_CONNECT_H_
 #define INCLUDE_XPLANE_CONNECT_CPP_XPLANE_CONNECT_H_
-
-#ifdef _WIN32 /* WIN32 SYSTEM */
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#pragma comment(lib, "ws2_32.lib") // Winsock Library
-#elif (__APPLE__ || __linux)
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <unistd.h>
-#endif
 
 #include <cstdint>
 #include <cstdlib>
 
+#include <memory>
 #include <string>
 
-struct XPCSocket {
-    // X-Plane IP and Port
-    std::string xplaneAddr;
-    std::uint16_t xplanePort{0};
-    std::uint16_t localPort{0};
-
-#ifdef _WIN32
-    SOCKET datagramSocket{};
-#else
-    int datagramSocket{0};
-#endif
-};
+namespace xpc {
 
 enum class WYPT_OP { XPC_WYPT_ADD = 1, XPC_WYPT_DEL = 2, XPC_WYPT_CLR = 3 };
 
@@ -342,6 +331,21 @@ class XPlaneConnect final {
     int sendCOMM(const char *comm);
 
   private:
+    struct XPCSocket;
+
+    /// Opens a new connection to XPC on the specified port.
+    ///
+    /// \param xpIP   A string representing the IP address of the host running X-Plane.
+    /// \param xpPort The port of the X-Plane Connect plugin is listening on. Usually 49009.
+    /// \param port   The local port to use when sending and receiving data from XPC.
+    /// \returns      An XPCSocket struct representing the newly created connection.
+    static std::unique_ptr<XPCSocket> openUDP(std::string xpIP, unsigned short xpPort, unsigned short port);
+
+    /// Closes the specified connection and releases resources associated with it.
+    ///
+    /// \param sock The socket to close.
+    int closeUDP();
+
     /// Sends the given data to the X-Plane plugin.
     ///
     /// \param sock   The socket to use to send the data.
@@ -363,7 +367,9 @@ class XPlaneConnect final {
     int sendTERRRequest(double posi[3], char ac);
     int getTERRResponse(double values[11], char ac);
 
-    XPCSocket xpcSocket_;
+    std::unique_ptr<XPCSocket> pXPCSocket_;
 };
+
+} // namespace xpc
 
 #endif // INCLUDE_XPLANE_CONNECT_CPP_XPLANE_CONNECT_H_
