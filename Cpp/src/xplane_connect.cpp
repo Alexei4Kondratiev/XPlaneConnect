@@ -56,6 +56,7 @@
 #include <cstdlib>
 #include <cstring>
 
+#include <algorithm>
 #include <memory>
 #include <string>
 #include <utility>
@@ -125,21 +126,21 @@ void printError(const char *functionName, const char *format, ...) {
 /****                       Low Level UDP functions                       ****/
 /*****************************************************************************/
 
-/// Opens a new connection to XPC on the specified port.
+/// Opens a new connection to XPC on the specified localPort.
 ///
-/// \param xpIP   A string representing the IP address of the host running X-Plane.
-/// \param xpPort The port of the X-Plane Connect plugin is listening on. Usually 49009.
-/// \param port   The local port to use when sending and receiving data from XPC.
+/// \param xplaneIPv4Addr   A string representing the IP address of the host running X-Plane.
+/// \param xplanePort The localPort of the X-Plane Connect plugin is listening on. Usually 49009.
+/// \param localPort   The local localPort to use when sending and receiving data from XPC.
 /// \returns      An XPCSocket struct representing the newly created connection.
-std::unique_ptr<XPlaneConnect::XPCSocket> XPlaneConnect::openUDP(std::string xpIP, unsigned short xpPort,
-                                                                 unsigned short port) {
+std::unique_ptr<XPlaneConnect::XPCSocket> XPlaneConnect::openUDP(std::string xplaneIPv4Addr, unsigned short xplanePort,
+                                                                 unsigned short localPort) {
     // Set X-Plane Port and IP
-    if (xpIP.empty() || xpIP == "localhost") {
-        xpIP = "127.0.0.1";
+    if (xplaneIPv4Addr.empty() || xplaneIPv4Addr == "localhost") {
+        xplaneIPv4Addr = "127.0.0.1";
     }
     auto pXPCSocket = std::make_unique<XPCSocket>();
-    pXPCSocket->xplaneIPv4Addr = std::move(xpIP);
-    pXPCSocket->xplanePort = xpPort == 0 ? 49009 : xpPort;
+    pXPCSocket->xplaneIPv4Addr = std::move(xplaneIPv4Addr);
+    pXPCSocket->xplanePort = xplanePort == 0 ? 49009 : xplanePort;
 
     try {
         winSockInit();
@@ -163,7 +164,7 @@ std::unique_ptr<XPlaneConnect::XPCSocket> XPlaneConnect::openUDP(std::string xpI
     sockaddr_in recvaddr{};
     recvaddr.sin_family = AF_INET;
     recvaddr.sin_addr.s_addr = INADDR_ANY;
-    recvaddr.sin_port = htons(port);
+    recvaddr.sin_port = htons(localPort);
     if (bind(pXPCSocket->datagramSocket, reinterpret_cast<sockaddr *>(&recvaddr), sizeof(recvaddr)) == -1) {
         throw OpenUDPError{ComposeErrorMessage(__FILE__, __func__, __LINE__, "Socket bind failed")};
     }
@@ -195,11 +196,13 @@ int XPlaneConnect::closeUDP() {
     if (status == 0) {
         status = closesocket(pXPCSocket_->datagramSocket);
     }
+    pXPCSocket_->datagramSocket = INVALID_SOCKET;
 #else  //  _WIN32
     int status = shutdown(pXPCSocket_->datagramSocket, SHUT_RDWR);
     if (status == 0) {
         status = close(pXPCSocket_->datagramSocket);
     }
+    pXPCSocket_->datagramSocket = -1;
 #endif //  _WIN32
     return status;
 }
@@ -212,20 +215,21 @@ XPlaneConnect::XPlaneConnect() : XPlaneConnect("") {}
 
 /// Initializes a new instance of the {\code XPlaneConnect} class using the specified X-Plane host.
 ///
-/// \param xplaneAddr The network host on which X-Plane is running.
+/// \param xplaneIPv4Addr The network host on which X-Plane is running.
 /// \throws java.net.SocketException      If this instance is unable to bind to the specified port.
 /// \throws java.net.UnknownHostException If the specified hostname can not be resolved.
-XPlaneConnect::XPlaneConnect(std::string xplaneAddr) : XPlaneConnect(std::move(xplaneAddr), kXPCDefaultXplanePort, 0) {}
+XPlaneConnect::XPlaneConnect(std::string xplaneIPv4Addr)
+    : XPlaneConnect(std::move(xplaneIPv4Addr), kXPCDefaultXplanePort, 0) {}
 
 /// Initializes a new instance of the {\code XPlaneConnect} class using the specified ports and X-Plane host.
 ///
-/// \param xplaneAddr The network host on which X-Plane is running.
+/// \param xplaneIPv4Addr The network host on which X-Plane is running.
 /// \param xplanePort The port on which the X-Plane Connect plugin is listening.
 /// \param localPort  The local port to use when sending and receiving data from XPC.
 /// \throws java.net.SocketException      If this instance is unable to bind to the specified port.
 /// \throws java.net.UnknownHostException If the specified hostname can not be resolved.
-XPlaneConnect::XPlaneConnect(std::string xplaneAddr, std::uint16_t xplanePort, std::uint16_t localPort)
-    : pXPCSocket_{openUDP(std::move(xplaneAddr), xplanePort, localPort)} {}
+XPlaneConnect::XPlaneConnect(std::string xplaneIPv4Addr, std::uint16_t xplanePort, std::uint16_t localPort)
+    : pXPCSocket_{openUDP(std::move(xplaneIPv4Addr), xplanePort, localPort)} {}
 
 /// Closes the specified connection and releases resources associated with it.
 XPlaneConnect::~XPlaneConnect() {
@@ -268,11 +272,9 @@ std::uint16_t XPlaneConnect::getRecvPort() const noexcept { return pXPCSocket_->
 /// \param buffer A pointer to the data to send.
 /// \param len    The number of bytes to send.
 /// \returns      If an error occurs, a negative number. Otehrwise, the number of bytes sent.
-int XPlaneConnect::sendUDP(char buffer[], int len) {
-    // Preconditions
-    if (len <= 0) {
-        printError("sendUDP", "Message length must be positive.");
-        return -1;
+int XPlaneConnect::sendUDP(const std::vector<char> &buffer) {
+    if (buffer.empty()) {
+        return 0;
     }
 
     // Set up destination address
@@ -281,13 +283,16 @@ int XPlaneConnect::sendUDP(char buffer[], int len) {
     dst.sin_port = htons(pXPCSocket_->xplanePort);
     inet_pton(AF_INET, pXPCSocket_->xplaneIPv4Addr.c_str(), &dst.sin_addr.s_addr);
 
-    int result = sendto(pXPCSocket_->datagramSocket, buffer, len, 0, (const struct sockaddr *)&dst, sizeof(dst));
+    int result = sendto(pXPCSocket_->datagramSocket, buffer.data(), static_cast<int>(buffer.size()), 0,
+                        (const struct sockaddr *)&dst, sizeof(dst));
     if (result < 0) {
-        printError("sendUDP", "Send operation failed.");
-        return -2;
+        throw SendUDPError{
+            ComposeErrorMessage(__FILE__, __func__, __LINE__, "Send operation failed: " + std::to_string(result))};
     }
-    if (result < len) {
-        printError("sendUDP", "Unexpected number of bytes sent.");
+    if (result != buffer.size()) {
+        throw SendUDPError{ComposeErrorMessage(__FILE__, __func__, __LINE__,
+                                               "Unexpected number of bytes sent: " + std::to_string(result) + " from " +
+                                                   std::to_string(buffer.size()))};
     }
     return result;
 }
@@ -298,7 +303,7 @@ int XPlaneConnect::sendUDP(char buffer[], int len) {
 /// \param buffer A pointer to the location to store the data.
 /// \param len    The number of bytes to read.
 /// \returns      If an error occurs, a negative number. Otherwise, the number of bytes read.
-int XPlaneConnect::readUDP(char buffer[], int len) {
+std::vector<char> XPlaneConnect::readUDP(std::size_t size) {
     // For readUDP, use the select command - minimum timeout of 0 makes it polling.
     // Without this, playback may become choppy due to process blocking
 
@@ -321,21 +326,25 @@ int XPlaneConnect::readUDP(char buffer[], int len) {
     // Select Command
     int status = select(static_cast<int>(pXPCSocket_->datagramSocket + 1), &stReadFDS, nullptr, &stExceptFDS, &timeout);
     if (status < 0) {
-        printError("readUDP", "Select command error");
-        return -1;
+        throw ReadUDPError{
+            ComposeErrorMessage(__FILE__, __func__, __LINE__, "Select command error: " + std::to_string(status))};
     }
     if (status == 0) {
         // No data
-        return 0;
+        return {};
     }
 
+    std::vector<char> buffer(size);
     // If no error: Read Data
-    status = recv(pXPCSocket_->datagramSocket, buffer, len, 0);
+    status = recv(pXPCSocket_->datagramSocket, buffer.data(), static_cast<int>(size), 0);
     if (status < 0) {
-        printError("readUDP", "Error reading socket");
+        throw ReadUDPError{
+            ComposeErrorMessage(__FILE__, __func__, __LINE__, "Error reading socket: " + std::to_string(status))};
     }
-    return status;
+    buffer.resize(status);
+    return buffer;
 }
+
 /*****************************************************************************/
 /****                    End Low Level UDP functions                      ****/
 /*****************************************************************************/
@@ -343,15 +352,22 @@ int XPlaneConnect::readUDP(char buffer[], int len) {
 /*****************************************************************************/
 /****                      Configuration functions                        ****/
 /*****************************************************************************/
-int XPlaneConnect::setCONN(unsigned short port) {
+void XPlaneConnect::setCONN(std::uint16_t port) {
+    static const std::size_t command_size{7U};
+    static const std::string command_tag{"CONN"};
+    static const std::string response_tag{"CONF"};
+
     // Set up command
-    char buffer[32] = "CONN";
-    memcpy(&buffer[5], &port, 2);
+    std::vector<char> buffer{command_tag.begin(), command_tag.end()};
+    buffer.resize(command_size);
+    std::memcpy(&buffer[5], &port, sizeof(port));
 
     // Send command
-    if (sendUDP(buffer, 7) < 0) {
-        printError("setCONN", "Failed to send command");
-        return -1;
+    try {
+        sendUDP(buffer);
+    } catch (const SendUDPError &ex) {
+        throw SetCONNError{
+            ComposeErrorMessage(__FILE__, __func__, __LINE__, "Failed to send command: " + std::string{ex.what()})};
     }
 
     // Switch socket
@@ -359,38 +375,46 @@ int XPlaneConnect::setCONN(unsigned short port) {
     pXPCSocket_ = openUDP(pXPCSocket_->xplaneIPv4Addr, pXPCSocket_->xplanePort, port);
 
     // Read response
-    int result = readUDP(buffer, 32);
+    try {
+        buffer = readUDP(32);
+    } catch (const ReadUDPError &ex) {
+        throw SetCONNError{
+            ComposeErrorMessage(__FILE__, __func__, __LINE__, "Failed to read response: " + std::string{ex.what()})};
+    }
 
-    if (result <= 0) {
-        printError("setCONN", "Failed to read response");
-        return -2;
-    }
-    if (strncmp(buffer, "CONF", 4) == 0) {
-        // Response received succesfully.
-        return 0;
-    }
     // Response incorrect
-    return -3;
+    if (buffer.size() < response_tag.size() ||
+        std::string{buffer.begin(), std::next(buffer.begin(), static_cast<std::int64_t>(response_tag.size()))} !=
+            response_tag) {
+
+        throw SetCONNError{ComposeErrorMessage(__FILE__, __func__, __LINE__, "Response incorrect")};
+    }
 }
 
-int XPlaneConnect::pauseSim(char pause) {
-    // Validte input
-    if (pause < 0 || (pause > 2 && pause < 100) || (pause > 119 && pause < 200) || pause > 219) {
-        printError("pauseSim", "Invalid argument: %i", pause);
-        return -2;
+void XPlaneConnect::pauseSim(std::uint8_t pause) {
+    static const std::size_t command_size{6U};
+    static const std::string command_tag{"SIMU"};
+
+    // Validate input
+    if ((pause > 2 && pause < 100) || (pause > 119 && pause < 200) || pause > 219) {
+        throw PauseSimError{
+            ComposeErrorMessage(__FILE__, __func__, __LINE__, "Invalid argument: " + std::to_string(pause))};
     }
 
     // Setup command
-    char buffer[6] = "SIMU";
-    buffer[5] = pause;
+    std::vector<char> buffer{command_tag.begin(), command_tag.end()};
+    buffer.resize(command_size);
+    buffer[5] = static_cast<char>(pause);
 
     // Send command
-    if (sendUDP(buffer, 6) < 0) {
-        printError("pauseSim", "Failed to send command");
-        return -1;
+    try {
+        sendUDP(buffer);
+    } catch (const SendUDPError &ex) {
+        throw PauseSimError{
+            ComposeErrorMessage(__FILE__, __func__, __LINE__, "Failed to send command: " + std::string{ex.what()})};
     }
-    return 0;
 }
+
 /*****************************************************************************/
 /****                    End Configuration functions                      ****/
 /*****************************************************************************/
@@ -398,52 +422,68 @@ int XPlaneConnect::pauseSim(char pause) {
 /*****************************************************************************/
 /****                    X-Plane UDP Data functions                       ****/
 /*****************************************************************************/
-int XPlaneConnect::sendDATA(float data[][9], int rows) {
+
+void XPlaneConnect::sendDATA(const std::vector<DataRowType> &data) {
+    static const std::size_t max_data_row_size{134U};
+    static const std::string command_tag{"DATA"};
+
     // Preconditions
+    if (data.empty()) {
+        return;
+    }
     // There are only 134 DATA rows in X-Plane. Realistically, clients probably
     // shouldn't be trying to set nearly this much data at once anyway.
-    if (rows > 134) {
+    if (data.size() > max_data_row_size) {
         printError("sendDATA", "Too many rows.");
-        return -1;
+        throw SendDATAError{
+            ComposeErrorMessage(__FILE__, __func__, __LINE__, "Too many rows: " + std::to_string(data.size()))};
     }
 
     // Setup command
     // 5 byte header + 134 rows * 9 values * 4 bytes per value => 4829 byte max length.
-    char buffer[4829] = "DATA";
-    int len = 5 + rows * 9 * sizeof(float);
-    unsigned short step = 9 * sizeof(float);
-    int i; // iterator
-    for (i = 0; i < rows; i++) {
-        buffer[5 + i * step] = (char)data[i][0];
-        memcpy(&buffer[9 + i * step], &data[i][1], 8 * sizeof(float));
+    std::vector<char> buffer{command_tag.begin(), command_tag.end()};
+    const std::size_t size = 5U + data.size() * std::tuple_size<DataRowType>::value * sizeof(float);
+    buffer.resize(size);
+    auto step = std::tuple_size<DataRowType>::value * sizeof(float);
+    for (std::size_t i = 0; i < size; ++i) {
+        std::memcpy(&buffer[5 + i * step], &data[i][0], std::tuple_size<DataRowType>::value * sizeof(float));
     }
+
     // Send command
-    if (sendUDP(buffer, len) < 0) {
-        printError("sendDATA", "Failed to send command");
-        return -2;
+    try {
+        sendUDP(buffer);
+    } catch (const SendUDPError &ex) {
+        throw SendDATAError{
+            ComposeErrorMessage(__FILE__, __func__, __LINE__, "Failed to send command: " + std::string{ex.what()})};
     }
-    return 0;
 }
 
-int XPlaneConnect::readDATA(float data[][9], int rows) {
+std::vector<XPlaneConnect::DataRowType> XPlaneConnect::readDATA(std::size_t rows) {
+    static const std::size_t max_data_row_size{134U};
+
+    // 5 byte header + 134 rows * 9 values * 4 bytes per value => 4829 byte max length.
+    static const std::size_t max_data_buffer_size{5U + max_data_row_size * std::tuple_size<DataRowType>::value *
+                                                           sizeof(float)};
+
     // Preconditions
+    if (rows == 0) {
+        return {};
+    }
     // There are only 134 DATA rows in X-Plane. Realistically, clients probably
     // shouldn't be trying to read nearly this much data at once anyway.
-    if (rows > 134) {
-        printError("readDATA", "Too many rows.");
-        // Read as much as we can anyway
-        rows = 134;
-    }
+    rows = std::min<>(rows, max_data_row_size);
 
     // Read data
-    char buffer[4829] = {0};
-    int result = readUDP(buffer, 4829);
-    if (result <= 0) {
-        printError("readDATA", "Failed to read from socket.");
-        return -1;
+    std::vector<char> buffer;
+    try {
+        buffer = readUDP(max_data_buffer_size);
+    } catch (const ReadUDPError &ex) {
+        throw ReadDATAError{
+            ComposeErrorMessage(__FILE__, __func__, __LINE__, "Failed to read from socket: " + std::string{ex.what()})};
     }
+
     // Validate data
-    int readRows = (result - 5) / 36;
+    auto readRows = (buffer.size() - 5) / 36;
     if (readRows > rows) {
         printError("readDATA", "Read more rows than will fit in dataRef.");
     } else if (readRows < rows) {
@@ -460,6 +500,7 @@ int XPlaneConnect::readDATA(float data[][9], int rows) {
     }
     return rows;
 }
+
 /*****************************************************************************/
 /****                  End X-Plane UDP Data functions                     ****/
 /*****************************************************************************/

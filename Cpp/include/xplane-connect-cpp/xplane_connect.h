@@ -38,8 +38,10 @@
 #include <cstdint>
 #include <cstdlib>
 
+#include <array>
 #include <memory>
 #include <string>
+#include <vector>
 
 namespace xpc {
 
@@ -63,6 +65,8 @@ enum class VIEW_TYPE {
 
 class XPlaneConnect final {
   public:
+    using DataRowType = std::array<float, 9>;
+
     /// Initializes a new instance of the {\code XPlaneConnect} class using default ports and assuming X-Plane is
     /// running on the local machine.
     ///
@@ -71,19 +75,19 @@ class XPlaneConnect final {
 
     /// Initializes a new instance of the {\code XPlaneConnect} class using the specified X-Plane host.
     ///
-    /// \param xplaneAddr The network host on which X-Plane is running.
+    /// \param xplaneIPv4Addr The network host on which X-Plane is running.
     /// \throws java.net.SocketException      If this instance is unable to bind to the specified port.
     /// \throws java.net.UnknownHostException If the specified hostname can not be resolved.
-    explicit XPlaneConnect(std::string xplaneAddr);
+    explicit XPlaneConnect(std::string xplaneIPv4Addr);
 
     /// Initializes a new instance of the {\code XPlaneConnect} class using the specified ports and X-Plane host.
     ///
-    /// \param xplaneAddr The network host on which X-Plane is running.
+    /// \param xplaneIPv4Addr The network host on which X-Plane is running.
     /// \param xplanePort The port on which the X-Plane Connect plugin is listening.
     /// \param localPort  The local port to use when sending and receiving data from XPC.
     /// \throws java.net.SocketException      If this instance is unable to bind to the specified port.
     /// \throws java.net.UnknownHostException If the specified hostname can not be resolved.
-    XPlaneConnect(std::string xplaneAddr, std::uint16_t xplanePort, std::uint16_t localPort);
+    XPlaneConnect(std::string xplaneIPv4Addr, std::uint16_t xplanePort, std::uint16_t localPort);
 
     XPlaneConnect(const XPlaneConnect &) = delete;
     XPlaneConnect(XPlaneConnect &&) = delete;
@@ -127,14 +131,14 @@ class XPlaneConnect final {
     /// \param sock A pointer to the socket to change.
     /// \param port The new port to use.
     /// \returns    0 if successful, otherwise a negative value.
-    int setCONN(unsigned short port);
+    void setCONN(std::uint16_t port);
 
     /// Pause or unpause the simulation.
     ///
     /// \param sock  The socket to use to send the command.
     /// \param pause 0 to unpause the sim; 1 to pause, 100:119 to pause a/c 0:19, 200:219 to unpause a/c 0:19.
     /// \returns     0 if successful, otherwise a negative value.
-    int pauseSim(char pause);
+    void pauseSim(std::uint8_t pause);
 
     // X-Plane UDP DATA
 
@@ -145,7 +149,7 @@ class XPlaneConnect final {
     /// \param data    A 2D array of data rows to read into.
     /// \param rows    The number of rows in dataRef.
     /// \returns       0 if successful, otherwise a negative value.
-    int readDATA(float data[][9], int rows);
+    std::vector<DataRowType> readDATA(std::size_t rows);
 
     /// Sends X-Plane data on the specified socket.
     ///
@@ -154,7 +158,7 @@ class XPlaneConnect final {
     /// \param data    A 2D array of data rows to send.
     /// \param rows    The number of rows in dataRef.
     /// \returns       0 if successful, otherwise a negative value.
-    int sendDATA(float data[][9], int rows);
+    void sendDATA(const std::vector<DataRowType> &data);
 
     // DREF Manipulation
 
@@ -333,13 +337,14 @@ class XPlaneConnect final {
   private:
     struct XPCSocket;
 
-    /// Opens a new connection to XPC on the specified port.
+    /// Opens a new connection to XPC on the specified localPort.
     ///
-    /// \param xpIP   A string representing the IP address of the host running X-Plane.
-    /// \param xpPort The port of the X-Plane Connect plugin is listening on. Usually 49009.
-    /// \param port   The local port to use when sending and receiving data from XPC.
+    /// \param xplaneIPv4Addr   A string representing the IP address of the host running X-Plane.
+    /// \param xplanePort The localPort of the X-Plane Connect plugin is listening on. Usually 49009.
+    /// \param localPort   The local localPort to use when sending and receiving data from XPC.
     /// \returns      An XPCSocket struct representing the newly created connection.
-    static std::unique_ptr<XPCSocket> openUDP(std::string xpIP, unsigned short xpPort, unsigned short port);
+    static std::unique_ptr<XPCSocket> openUDP(std::string xplaneIPv4Addr, unsigned short xplanePort,
+                                              unsigned short localPort);
 
     /// Closes the specified connection and releases resources associated with it.
     ///
@@ -352,7 +357,7 @@ class XPlaneConnect final {
     /// \param buffer A pointer to the data to send.
     /// \param len    The number of bytes to send.
     /// \returns      If an error occurs, a negative number. Otehrwise, the number of bytes sent.
-    int sendUDP(char buffer[], int len);
+    int sendUDP(const std::vector<char> &buffer);
 
     /// Reads a datagram from the specified socket.
     ///
@@ -360,7 +365,7 @@ class XPlaneConnect final {
     /// \param buffer A pointer to the location to store the data.
     /// \param len    The number of bytes to read.
     /// \returns      If an error occurs, a negative number. Otherwise, the number of bytes read.
-    int readUDP(char buffer[], int len);
+    std::vector<char> readUDP(std::size_t size);
 
     int sendDREFRequest(const char *drefs[], unsigned char count);
     int getDREFResponse(float *values[], unsigned char count, int sizes[]);

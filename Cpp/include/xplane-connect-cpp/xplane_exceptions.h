@@ -44,6 +44,36 @@ class OpenUDPError : public XPlaneConnectError {
     using XPlaneConnectError::XPlaneConnectError;
 };
 
+class SendUDPError : public XPlaneConnectError {
+  public:
+    using XPlaneConnectError::XPlaneConnectError;
+};
+
+class ReadUDPError : public XPlaneConnectError {
+  public:
+    using XPlaneConnectError::XPlaneConnectError;
+};
+
+class SetCONNError : public XPlaneConnectError {
+  public:
+    using XPlaneConnectError::XPlaneConnectError;
+};
+
+class PauseSimError : public XPlaneConnectError {
+  public:
+    using XPlaneConnectError::XPlaneConnectError;
+};
+
+class SendDATAError : public XPlaneConnectError {
+  public:
+    using XPlaneConnectError::XPlaneConnectError;
+};
+
+class ReadDATAError : public XPlaneConnectError {
+  public:
+    using XPlaneConnectError::XPlaneConnectError;
+};
+
 } // namespace xpc
 
 #endif // INCLUDE_XPLANE_CONNECT_CPP_XPLANE_EXCEPTIONS_H_
