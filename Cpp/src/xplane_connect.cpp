@@ -39,6 +39,9 @@
 #include <ws2tcpip.h>
 #pragma comment(lib, "ws2_32.lib") // Need to link with Ws2_32.lib
 
+#undef min
+#undef max
+
 #else //  _WIN32
 /* Assume that any non-Windows platform uses POSIX-style sockets instead. */
 #include <arpa/inet.h>
@@ -57,6 +60,8 @@
 #include <cstring>
 
 #include <algorithm>
+#include <iterator>
+#include <limits>
 #include <memory>
 #include <string>
 #include <utility>
@@ -352,6 +357,7 @@ std::vector<char> XPlaneConnect::readUDP(std::size_t size) {
 /*****************************************************************************/
 /****                      Configuration functions                        ****/
 /*****************************************************************************/
+
 void XPlaneConnect::setCONN(std::uint16_t port) {
     static const std::size_t command_size{7U};
     static const std::string command_tag{"CONN"};
@@ -472,7 +478,7 @@ std::vector<XPlaneConnect::DataRowType> XPlaneConnect::readDATA(std::size_t rows
     }
     // There are only 134 DATA rows in X-Plane. Realistically, clients probably
     // shouldn't be trying to read nearly this much data at once anyway.
-    rows = std::min<>(rows, max_data_row_size);
+    rows = std::min(rows, max_data_row_size);
 
     // Read data
     std::vector<char> buffer;
@@ -486,7 +492,7 @@ std::vector<XPlaneConnect::DataRowType> XPlaneConnect::readDATA(std::size_t rows
     // Validate data
     const std::size_t readRows = (buffer.size() <= 5) ? 0 : (buffer.size() - 5) / data_read_row_size;
     // Copy as much data as we read anyway
-    rows = std::min<>(rows, readRows);
+    rows = std::min(rows, readRows);
 
     std::vector<XPlaneConnect::DataRowType> data(rows);
     // Parse data
@@ -505,45 +511,61 @@ std::vector<XPlaneConnect::DataRowType> XPlaneConnect::readDATA(std::size_t rows
 /****                          DREF functions                             ****/
 /*****************************************************************************/
 
-int XPlaneConnect::sendDREF(const char *dref, float values[], int size) { return sendDREFs(&dref, &values, &size, 1); }
+void XPlaneConnect::sendDREF(const std::string &dref, const std::vector<float> &values) {
+    if (dref.empty() || values.empty()) {
+        return;
+    }
+    return sendDREFs({dref}, {values});
+}
 
-int XPlaneConnect::sendDREFs(const char *drefs[], float *values[], int sizes[], int count) {
+void XPlaneConnect::sendDREFs(const std::vector<std::string> &drefs, const std::vector<std::vector<float>> &values) {
+    static const std::size_t command_size{65536U};
+    static const std::string command_tag{"DREF"};
+    static const std::size_t command_pos{5U};
+
+    if (drefs.empty() || values.empty()) {
+        return;
+    }
+
     // Setup command
     // Max size is technically unlimited.
-    char buffer[65536] = "DREF";
-    int pos = 5;
-    int i; // Iterator
-    for (i = 0; i < count; ++i) {
-        int drefLen = strnlen(drefs[i], 256);
-        if (pos + drefLen + sizes[i] * 4 + 2 > 65536) {
-            printError("sendDREF", "About to overrun the send buffer!");
-            return -4;
+    std::vector<char> buffer{command_tag.begin(), command_tag.end()};
+    buffer.resize(command_size);
+    std::size_t pos = command_pos;
+    for (std::size_t i = 0; i < drefs.size(); ++i) {
+        const std::size_t drefLen = drefs[i].length();
+        if (drefLen > std::numeric_limits<unsigned char>::max()) {
+            throw SendDREFError{ComposeErrorMessage(__FILE__, __func__, __LINE__,
+                                                    "dref " + std::to_string(drefLen) +
+                                                        " is too long. Must be less than 256 characters")};
         }
-        if (drefLen > 255) {
-            printError("sendDREF", "dref %d is too long. Must be less than 256 characters.", i);
-            return -1;
+        const std::size_t size = values[i].size();
+        if (values[i].size() > std::numeric_limits<unsigned char>::max()) {
+            throw SendDREFError{ComposeErrorMessage(
+                __FILE__, __func__, __LINE__, "size " + std::to_string(size) + " is too big. Must be less than 256")};
         }
-        if (sizes[i] > 255) {
-            printError("sendDREF", "size %d is too big. Must be less than 256.", i);
-            return -2;
+        if (pos + drefLen + size * sizeof(float) + 2 * sizeof(unsigned char) > command_size) {
+            throw SendDREFError{ComposeErrorMessage(__FILE__, __func__, __LINE__, "About to overrun the send buffer!")};
         }
         // Copy dref to buffer
-        buffer[pos++] = (unsigned char)drefLen;
-        memcpy(buffer + pos, drefs[i], drefLen);
+        buffer[pos++] = static_cast<char>(drefLen);
+        std::copy_n(drefs[i].begin(), drefLen, std::next(buffer.begin(), static_cast<std::int64_t>(pos)));
         pos += drefLen;
 
         // Copy values to buffer
-        buffer[pos++] = (unsigned char)sizes[i];
-        memcpy(buffer + pos, values[i], sizes[i] * sizeof(float));
-        pos += sizes[i] * sizeof(float);
+        buffer[pos++] = static_cast<char>(size);
+        std::memcpy(&buffer[pos], values[i].data(), size * sizeof(float));
+        pos += size * sizeof(float);
     }
+    buffer.resize(pos);
 
     // Send command
-    if (sendUDP(buffer, pos) < 0) {
-        printError("setDREF", "Failed to send command");
-        return -3;
+    try {
+        sendUDP(buffer);
+    } catch (const SendUDPError &ex) {
+        throw SendDREFError{
+            ComposeErrorMessage(__FILE__, __func__, __LINE__, "Failed to send command: " + std::string{ex.what()})};
     }
-    return 0;
 }
 
 int XPlaneConnect::sendDREFRequest(const char *drefs[], unsigned char count) {

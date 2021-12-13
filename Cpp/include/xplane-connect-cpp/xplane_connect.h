@@ -173,7 +173,7 @@ class XPlaneConnect final {
     /// \param values An array of values representing the data to set.
     /// \param size   The number of elements in values.
     /// \returns      0 if successful, otherwise a negative value.
-    int sendDREF(const char *dref, float values[], int size);
+    void sendDREF(const std::string &dref, const std::vector<float> &values);
 
     /// Sets the specified datarefs to the specified values.
     ///
@@ -187,7 +187,7 @@ class XPlaneConnect final {
     /// \param sizes  The number of elements in each array in values
     /// \param count  The number of datarefs being set.
     /// \returns      0 if successful, otherwise a negative value.
-    int sendDREFs(const char *drefs[], float *values[], int sizes[], int count);
+    void sendDREFs(const std::vector<std::string> &drefs, const std::vector<std::vector<float>> &values);
 
     /// Gets the value of the specified dataref.
     ///
