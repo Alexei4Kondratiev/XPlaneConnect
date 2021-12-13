@@ -464,6 +464,7 @@ std::vector<XPlaneConnect::DataRowType> XPlaneConnect::readDATA(std::size_t rows
     // 5 byte header + 134 rows * 9 values * 4 bytes per value => 4829 byte max length.
     static const std::size_t max_data_buffer_size{5U + max_data_row_size * std::tuple_size<DataRowType>::value *
                                                            sizeof(float)};
+    static const std::size_t data_read_row_size{36U};
 
     // Preconditions
     if (rows == 0) {
@@ -483,22 +484,17 @@ std::vector<XPlaneConnect::DataRowType> XPlaneConnect::readDATA(std::size_t rows
     }
 
     // Validate data
-    auto readRows = (buffer.size() - 5) / 36;
-    if (readRows > rows) {
-        printError("readDATA", "Read more rows than will fit in dataRef.");
-    } else if (readRows < rows) {
-        printError("readDATA", "Read fewer rows than expected.");
-        // Copy as much data as we read anyway
-        rows = readRows;
-    }
+    const std::size_t readRows = (buffer.size() <= 5) ? 0 : (buffer.size() - 5) / data_read_row_size;
+    // Copy as much data as we read anyway
+    rows = std::min<>(rows, readRows);
 
+    std::vector<XPlaneConnect::DataRowType> data(rows);
     // Parse data
-    int i; // iterator
-    for (i = 0; i < rows; ++i) {
-        data[i][0] = buffer[5 + i * 36];
-        memcpy(&data[i][1], &buffer[9 + i * 36], 8 * sizeof(float));
+    for (std::size_t i = 0; i < rows; ++i) {
+        std::memcpy(&data[i][0], &buffer[5 + i * data_read_row_size],
+                    std::tuple_size<DataRowType>::value * sizeof(float));
     }
-    return rows;
+    return data;
 }
 
 /*****************************************************************************/
@@ -508,6 +504,7 @@ std::vector<XPlaneConnect::DataRowType> XPlaneConnect::readDATA(std::size_t rows
 /*****************************************************************************/
 /****                          DREF functions                             ****/
 /*****************************************************************************/
+
 int XPlaneConnect::sendDREF(const char *dref, float values[], int size) { return sendDREFs(&dref, &values, &size, 1); }
 
 int XPlaneConnect::sendDREFs(const char *drefs[], float *values[], int sizes[], int count) {
