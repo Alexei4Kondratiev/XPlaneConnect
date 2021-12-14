@@ -84,6 +84,26 @@ class getDREFsError : public XPlaneConnectError {
     using XPlaneConnectError::XPlaneConnectError;
 };
 
+class getPOSIError : public XPlaneConnectError {
+  public:
+    using XPlaneConnectError::XPlaneConnectError;
+};
+
+class sendPOSIError : public XPlaneConnectError {
+  public:
+    using XPlaneConnectError::XPlaneConnectError;
+};
+
+class getTERRError : public XPlaneConnectError {
+  public:
+    using XPlaneConnectError::XPlaneConnectError;
+};
+
+class sendPOSTError : public XPlaneConnectError {
+  public:
+    using XPlaneConnectError::XPlaneConnectError;
+};
+
 } // namespace xpc
 
 #endif // INCLUDE_XPLANE_CONNECT_CPP_XPLANE_EXCEPTIONS_H_

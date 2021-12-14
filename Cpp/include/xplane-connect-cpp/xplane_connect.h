@@ -201,7 +201,7 @@ class XPlaneConnect final {
     /// \param size   The number of elements in values. The actual number of elements copied in will
     ///               be set when the function returns.
     /// \returns      0 if successful, otherwise a negative value.
-    int getDREF(const char *dref, float values[], int *size);
+    std::vector<std::vector<float>> getDREF(const std::string &dref);
 
     /// Gets the values of the specified datarefs.
     ///
@@ -216,7 +216,7 @@ class XPlaneConnect final {
     /// \param sizes  The number of elements in each row of values. The size of each row will be set
     ///               to the actual number of elements copied in for that row.
     /// \returns      0 if successful, otherwise a negative value.
-    int getDREFs(const char *drefs[], float *values[], unsigned char count, int sizes[]);
+    std::vector<std::vector<float>> getDREFs(const std::vector<std::string> &drefs);
 
     // Position
 
@@ -227,7 +227,7 @@ class XPlaneConnect final {
     ///               plugin. The format of values is [Lat, Lon, Alt, Pitch, Roll, Yaw, Gear]
     /// \param ac     The aircraft number to get the position of. 0 for the main/user's aircraft.
     /// \returns      0 if successful, otherwise a negative value.
-    int getPOSI(double values[7], char ac);
+    std::vector<double> getPOSI(std::uint8_t ac);
 
     /// Sets the position and orientation of the specified aircraft.
     ///
@@ -238,7 +238,7 @@ class XPlaneConnect final {
     /// \param size   The number of elements in values.
     /// \param ac     The aircraft number to set the position of. 0 for the main/user's aircraft.
     /// \returns      0 if successful, otherwise a negative value.
-    int sendPOSI(double values[], int size, char ac);
+    void sendPOSI(const std::vector<double> &values, std::uint8_t ac);
 
     // Terrain
 
@@ -257,7 +257,7 @@ class XPlaneConnect final {
     ///               The last output is the terrain probe result parameter.
     /// \param ac     The aircraft number to set the position of. 0 for the main/user's aircraft.
     /// \returns      0 if successful, otherwise a negative value.
-    int sendPOST(double posi[], int size, double values[11], char ac);
+    std::vector<double> sendPOST(const std::vector<double> &posi, std::uint8_t ac);
 
     /// Gets the terrain information of the specified aircraft.
     ///
@@ -273,7 +273,7 @@ class XPlaneConnect final {
     ///               The last output is the terrain probe result parameter.
     /// \param ac     The aircraft number to get the terrain data of. 0 for the main/user's aircraft.
     /// \returns      0 if successful, otherwise a negative value.
-    int getTERR(double posi[3], double values[11], char ac);
+    std::vector<double> getTERR(const std::vector<double> &posi, std::uint8_t ac);
 
     // Controls
 
@@ -369,8 +369,8 @@ class XPlaneConnect final {
 
     void sendDREFRequest(const std::vector<std::string> &drefs);
     std::vector<std::vector<float>> getDREFResponse(std::uint8_t count);
-    int sendTERRRequest(double posi[3], char ac);
-    int getTERRResponse(double values[11], char ac);
+    void sendTERRRequest(const std::vector<double> &posi, std::uint8_t ac);
+    std::vector<double> getTERRResponse();
 
     std::unique_ptr<XPCSocket> pXPCSocket_;
 };

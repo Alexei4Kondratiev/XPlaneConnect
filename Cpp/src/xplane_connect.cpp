@@ -618,7 +618,7 @@ std::vector<std::vector<float>> XPlaneConnect::getDREFResponse(std::uint8_t coun
     std::vector<char> buffer;
     try {
         buffer = readUDP(command_size);
-    } catch (const SendUDPError &ex) {
+    } catch (const ReadUDPError &ex) {
         throw getDREFsError{
             ComposeErrorMessage(__FILE__, __func__, __LINE__, "Read operation failed: " + std::string{ex.what()})};
     }
@@ -646,24 +646,13 @@ std::vector<std::vector<float>> XPlaneConnect::getDREFResponse(std::uint8_t coun
     return values;
 }
 
-int XPlaneConnect::getDREF(const char *dref, float values[], int *size) { return getDREFs(&dref, &values, 1, size); }
+std::vector<std::vector<float>> XPlaneConnect::getDREF(const std::string &dref) { return getDREFs({dref}); }
 
-int XPlaneConnect::getDREFs(const char *drefs[], float *values[], unsigned char count, int sizes[]) {
+std::vector<std::vector<float>> XPlaneConnect::getDREFs(const std::vector<std::string> &drefs) {
     // Send Command
-    int result = sendDREFRequest(drefs, count);
-    if (result < 0) {
-        // An error ocurred while sending.
-        // sendDREFRequest will print an error message, so just return.
-        return -1;
-    }
-
+    sendDREFRequest(drefs);
     // Read Response
-    if (getDREFResponse(values, count, sizes) < 0) {
-        // An error ocurred while reading the response.
-        // getDREFResponse will print an error message, so just return.
-        return -2;
-    }
-    return 0;
+    return getDREFResponse(drefs.size());
 }
 
 /*****************************************************************************/
@@ -674,92 +663,115 @@ int XPlaneConnect::getDREFs(const char *drefs[], float *values[], unsigned char 
 /****                          POSI functions                             ****/
 /*****************************************************************************/
 
-int XPlaneConnect::getPOSI(double values[7], char ac) {
+std::vector<double> XPlaneConnect::getPOSI(std::uint8_t ac) {
+    static const std::size_t command_size{6U};
+    static const std::string command_tag{"GETP"};
+    static const std::size_t command_pos{5U};
+    static const std::size_t read_buffer_size{46U};
+    static const std::size_t response_values_size{7U};
+
     // Setup send command
-    char buffer[6] = "GETP";
-    buffer[5] = ac;
+    std::vector<char> buffer{command_tag.begin(), command_tag.end()};
+    buffer.resize(command_size);
+    buffer[command_pos] = static_cast<char>(ac);
 
     // Send command
-    if (sendUDP(buffer, 6) < 0) {
-        printError("getPOSI", "Failed to send command.");
-        return -1;
+    try {
+        sendUDP(buffer);
+    } catch (const SendUDPError &ex) {
+        throw getPOSIError{
+            ComposeErrorMessage(__FILE__, __func__, __LINE__, "Failed to send command: " + std::string{ex.what()})};
     }
 
     // Get response
-    char readBuffer[46];
-    float f[7];
-    int readResult = readUDP(readBuffer, 46);
+    std::vector<char> readBuffer;
+    try {
+        readBuffer = readUDP(read_buffer_size);
+    } catch (const ReadUDPError &ex) {
+        throw getPOSIError{
+            ComposeErrorMessage(__FILE__, __func__, __LINE__, "Failed to read response: " + std::string{ex.what()})};
+    }
 
     // Copy response into values
-    if (readResult < 0) {
-        printError("getPOSI", "Failed to read response.");
-        return -2;
-    } else if (readResult == 34) /* lat/lon/h as 32-bit float */
-    {
-        memcpy(f, readBuffer + 6, 7 * sizeof(float));
-        values[0] = (double)f[0];
-        values[1] = (double)f[1];
-        values[2] = (double)f[2];
-        values[3] = (double)f[3];
-        values[4] = (double)f[4];
-        values[5] = (double)f[5];
-        values[6] = (double)f[6];
-    } else if (readResult == 46) /* lat/lon/h as 64-bit double */
-    {
-        memcpy(values, readBuffer + 6, 3 * sizeof(double));
-        memcpy(f, readBuffer + 30, 4 * sizeof(float));
-        values[3] = (double)f[0];
-        values[4] = (double)f[1];
-        values[5] = (double)f[2];
-        values[6] = (double)f[3];
+    std::vector<double> values(response_values_size);
+    std::array<float, response_values_size> f_val{};
+    if (readBuffer.size() == command_pos + 1 + response_values_size * sizeof(float)) {
+        /* lat/lon/h as 32-bit float */
+        std::memcpy(f_val.data(), &readBuffer[command_pos + 1], response_values_size * sizeof(float));
+        values[0] = static_cast<double>(f_val[0]);
+        values[1] = static_cast<double>(f_val[1]);
+        values[2] = static_cast<double>(f_val[2]);
+        values[3] = static_cast<double>(f_val[3]);
+        values[4] = static_cast<double>(f_val[4]);
+        values[5] = static_cast<double>(f_val[5]);
+        values[6] = static_cast<double>(f_val[6]);
+    } else if (readBuffer.size() == command_pos + 1 + 3 * sizeof(double) + 4 * sizeof(float)) {
+        /* lat/lon/h as 64-bit double */
+        std::memcpy(values.data(), &readBuffer[command_pos + 1], 3 * sizeof(double));
+        std::memcpy(f_val.data(), &readBuffer[command_pos + 1 + 3 * sizeof(double)], 4 * sizeof(float));
+        values[3] = static_cast<double>(f_val[0]);
+        values[4] = static_cast<double>(f_val[1]);
+        values[5] = static_cast<double>(f_val[2]);
+        values[6] = static_cast<double>(f_val[3]);
     } else {
-        printError("getPOSI", "Unexpected response length.");
-        return -3;
+        throw getPOSIError{ComposeErrorMessage(__FILE__, __func__, __LINE__,
+                                               "Unexpected response length: " + std::to_string(readBuffer.size()))};
     }
-    return 0;
+    return values;
 }
 
-int XPlaneConnect::sendPOSI(double values[], int size, char ac) {
+void XPlaneConnect::sendPOSI(const std::vector<double> &values, std::uint8_t ac) {
+    static const std::size_t command_size{46U};
+    static const std::string command_tag{"POSI"};
+    static const std::size_t command_pos{5U};
+    static const std::size_t request_values_size{7U};
+
     // Validate input
-    if (ac < 0 || ac > 20) {
-        printError("sendPOSI", "aircraft should be a value between 0 and 20.");
-        return -1;
+    if (values.empty()) {
+        return;
     }
-    if (size < 1 || size > 7) {
-        printError("sendPOSI", "size should be a value between 1 and 7.");
-        return -2;
+    if (values.size() > request_values_size) {
+        throw sendPOSIError{ComposeErrorMessage(
+            __FILE__, __func__, __LINE__, "Size should be a value between 1 and 7: " + std::to_string(values.size()))};
+    }
+    if (ac > 20) {
+        throw sendPOSIError{ComposeErrorMessage(__FILE__, __func__, __LINE__,
+                                                "Aircraft should be a value between 0 and 20: " +
+                                                    std::to_string(static_cast<std::size_t>(ac)))};
     }
 
     // Setup command
-    char buffer[46] = "POSI";
-    buffer[4] = 0xff; // Placeholder for message length
-    buffer[5] = ac;
-    int i; // iterator
+    std::vector<char> buffer{command_tag.begin(), command_tag.end()};
+    buffer.resize(command_size);
+    buffer[command_pos - 1] = static_cast<char>(0xFF); // Placeholder for message length
+    buffer[command_pos] = static_cast<char>(ac);
 
-    for (i = 0; i < 7; i++) // double for lat/lon/h
-    {
+    for (std::size_t i = 0; i < request_values_size; ++i) {
+        // double for lat/lon/h
         double val = -998;
 
-        if (i < size) {
+        if (i < values.size()) {
             val = values[i];
         }
-        if (i < 3) /* lat/lon/h */
-        {
-            memcpy(&buffer[6 + i * 8], &val, sizeof(double));
-        } else /* attitude and gear */
-        {
-            float f = (float)val;
-            memcpy(&buffer[18 + i * 4], &f, sizeof(float));
+        if (i < 3) {
+            /* Lat, Lon, Alt */
+            memcpy(&buffer[command_pos + 1 + i * sizeof(double)], &val, sizeof(double));
+        } else {
+            /* Pitch, Roll, Yaw, Gear */
+            auto f_val = static_cast<float>(val);
+            memcpy(&buffer[command_pos + 1 + 3 * sizeof(double) + i * sizeof(float)], &f_val, sizeof(float));
         }
     }
 
     // Send Command
-    if (sendUDP(buffer, 46) < 0) {
-        printError("sendPOSI", "Failed to send command");
-        return -3;
+    try {
+        sendUDP(buffer);
+    } catch (const SendUDPError &ex) {
+        throw sendPOSIError{
+            ComposeErrorMessage(__FILE__, __func__, __LINE__, "Failed to send command: " + std::string{ex.what()})};
     }
-    return 0;
 }
+
 /*****************************************************************************/
 /****                        End POSI functions                           ****/
 /*****************************************************************************/
@@ -767,118 +779,135 @@ int XPlaneConnect::sendPOSI(double values[], int size, char ac) {
 /*****************************************************************************/
 /****                          TERR functions                             ****/
 /*****************************************************************************/
-int XPlaneConnect::sendTERRRequest(double posi[3], char ac) {
+
+void XPlaneConnect::sendTERRRequest(const std::vector<double> &posi, std::uint8_t ac) {
+    static const std::size_t command_size{30U};
+    static const std::string command_tag{"GETT"};
+    static const std::size_t command_pos{5U};
+    static const std::size_t request_values_size{3U};
+
+    // Validate input
+    if (posi.empty()) {
+        return;
+    }
+    if (posi.size() != request_values_size) {
+        throw getTERRError{ComposeErrorMessage(__FILE__, __func__, __LINE__,
+                                               "Size should be a value 3: " + std::to_string(posi.size()))};
+    }
+
     // Setup send command
-    char buffer[30] = "GETT";
-    buffer[5] = ac;
-    memcpy(&buffer[6], posi, 3 * sizeof(double));
+    std::vector<char> buffer{command_tag.begin(), command_tag.end()};
+    buffer.resize(command_size);
+    buffer[command_pos] = static_cast<char>(ac);
+    std::memcpy(&buffer[command_pos + 1], posi.data(), request_values_size * sizeof(double));
 
     // Send command
-    if (sendUDP(buffer, 30) < 0) {
-        printError("getTERR", "Failed to send command.");
-        return -1;
+    try {
+        sendUDP(buffer);
+    } catch (const SendUDPError &ex) {
+        throw getTERRError{
+            ComposeErrorMessage(__FILE__, __func__, __LINE__, "Failed to send command: " + std::string{ex.what()})};
     }
-    return 0;
 }
 
-int XPlaneConnect::getTERRResponse(double values[11], char ac) {
+std::vector<double> XPlaneConnect::getTERRResponse() {
+    static const std::size_t read_buffer_size{62U};
+    static const std::size_t command_pos{5U};
+    static const std::size_t response_values_size{11U};
+    static const std::size_t tmp_float_values_size{8U};
+
     // Get response
-    char readBuffer[62];
-    int readResult = readUDP(readBuffer, 62);
-    if (readResult < 0) {
-        printError("getTERR", "Failed to read response.");
-        return -2;
+    std::vector<char> readBuffer;
+    try {
+        readBuffer = readUDP(read_buffer_size);
+    } catch (const ReadUDPError &ex) {
+        throw getTERRError{
+            ComposeErrorMessage(__FILE__, __func__, __LINE__, "Failed to read response: " + std::string{ex.what()})};
     }
-    if (readResult != 62) {
-        printError("getTERR", "Unexpected response length.");
-        return -3;
+    if (readBuffer.size() != read_buffer_size) {
+        throw getTERRError{ComposeErrorMessage(__FILE__, __func__, __LINE__,
+                                               "Unexpected response length: " + std::to_string(readBuffer.size()))};
     }
 
     // Copy response into outputs
-    float f[8];
-    ac = readBuffer[5];
-    memcpy(values, readBuffer + 6, 3 * sizeof(double));
-    memcpy(f, readBuffer + 30, 8 * sizeof(float));
-    values[3] = (double)f[0];
-    values[4] = (double)f[1];
-    values[5] = (double)f[2];
-    values[6] = (double)f[3];
-    values[7] = (double)f[4];
-    values[8] = (double)f[5];
-    values[9] = (double)f[6];
-    values[10] = (double)f[7];
+    std::vector<double> values(response_values_size);
+    std::array<float, tmp_float_values_size> f_val{};
+    std::memcpy(values.data(), &readBuffer[command_pos + 1], 3 * sizeof(double));
+    std::memcpy(f_val.data(), &readBuffer[command_pos + 1 + 3 * sizeof(double)], 8 * sizeof(float));
+    values[3] = static_cast<double>(f_val[0]);
+    values[4] = static_cast<double>(f_val[1]);
+    values[5] = static_cast<double>(f_val[2]);
+    values[6] = static_cast<double>(f_val[3]);
+    values[7] = static_cast<double>(f_val[4]);
+    values[8] = static_cast<double>(f_val[5]);
+    values[9] = static_cast<double>(f_val[6]);
+    values[10] = static_cast<double>(f_val[7]);
 
-    return 0;
+    return values;
 }
 
-int XPlaneConnect::sendPOST(double posi[], int size, double values[11], char ac) {
+std::vector<double> XPlaneConnect::sendPOST(const std::vector<double> &posi, std::uint8_t ac) {
+    static const std::size_t command_size{46U};
+    static const std::string command_tag{"POST"};
+    static const std::size_t command_pos{5U};
+    static const std::size_t request_values_size{7U};
+
     // Validate input
-    if (ac < 0 || ac > 20) {
-        printError("sendPOST", "aircraft should be a value between 0 and 20.");
-        return -1;
+    if (posi.empty()) {
+        return {};
     }
-    if (size < 1 || size > 7) {
-        printError("sendPOST", "size should be a value between 1 and 7.");
-        return -2;
+    if (posi.size() > request_values_size) {
+        throw sendPOSTError{ComposeErrorMessage(
+            __FILE__, __func__, __LINE__, "Size should be a value between 1 and 7: " + std::to_string(posi.size()))};
+    }
+    if (ac > 20) {
+        throw sendPOSTError{ComposeErrorMessage(__FILE__, __func__, __LINE__,
+                                                "Aircraft should be a value between 0 and 20: " +
+                                                    std::to_string(static_cast<std::size_t>(ac)))};
     }
 
     // Setup command
-    char buffer[46] = "POST";
-    buffer[4] = 0xff; // Placeholder for message length
-    buffer[5] = ac;
-    int i; // iterator
+    std::vector<char> buffer{command_tag.begin(), command_tag.end()};
+    buffer.resize(command_size);
+    buffer[command_pos - 1] = static_cast<char>(0xFF); // Placeholder for message length
+    buffer[command_pos] = static_cast<char>(ac);
 
-    for (i = 0; i < 7; i++) // double for lat/lon/h
-    {
+    for (std::size_t i = 0; i < request_values_size; ++i) {
+        // double for lat/lon/h
         double val = -998;
 
-        if (i < size) {
+        if (i < posi.size()) {
             val = posi[i];
         }
-        if (i < 3) /* lat/lon/h */
-        {
-            memcpy(&buffer[6 + i * 8], &val, sizeof(double));
-        } else /* attitude and gear */
-        {
-            float f = (float)val;
-            memcpy(&buffer[18 + i * 4], &f, sizeof(float));
+        if (i < 3) {
+            /* Lat, Lon, Alt */
+            std::memcpy(&buffer[command_pos + 1 + i * sizeof(double)], &val, sizeof(double));
+        } else {
+            /* Pitch, Roll, Yaw, Gear */
+            auto f_val = static_cast<float>(val);
+            std::memcpy(&buffer[command_pos + 1 + 3 * sizeof(double) + i * sizeof(float)], &f_val, sizeof(float));
         }
     }
 
     // Send Command
-    if (sendUDP(buffer, 46) < 0) {
-        printError("sendPOST", "Failed to send command");
-        return -3;
+    try {
+        sendUDP(buffer);
+    } catch (const SendUDPError &ex) {
+        throw sendPOSTError{
+            ComposeErrorMessage(__FILE__, __func__, __LINE__, "Failed to send command: " + std::string{ex.what()})};
     }
 
     // Read Response
-    int result = getTERRResponse(values, ac);
-    if (result < 0) {
-        // A error ocurred while reading the response.
-        // getTERRResponse will print an error message, so just return.
-        return result;
-    }
-    return 0;
+    return getTERRResponse();
 }
 
-int XPlaneConnect::getTERR(double posi[3], double values[11], char ac) {
+std::vector<double> XPlaneConnect::getTERR(const std::vector<double> &posi, std::uint8_t ac) {
     // Send Command
-    int result = sendTERRRequest(posi, ac);
-    if (result < 0) {
-        // An error ocurred while sending.
-        // sendTERRRequest will print an error message, so just return.
-        return result;
-    }
-
+    sendTERRRequest(posi, ac);
     // Read Response
-    result = getTERRResponse(values, ac);
-    if (result < 0) {
-        // An error ocurred while reading the response.
-        // getTERRResponse will print an error message, so just return.
-        return result;
-    }
-    return 0;
+    return getTERRResponse();
 }
+
 /*****************************************************************************/
 /****                        End TERR functions                           ****/
 /*****************************************************************************/
@@ -886,6 +915,7 @@ int XPlaneConnect::getTERR(double posi[3], double values[11], char ac) {
 /*****************************************************************************/
 /****                          CTRL functions                             ****/
 /*****************************************************************************/
+
 int XPlaneConnect::getCTRL(float values[7], char ac) {
     // Setup send command
     char buffer[6] = "GETC";
