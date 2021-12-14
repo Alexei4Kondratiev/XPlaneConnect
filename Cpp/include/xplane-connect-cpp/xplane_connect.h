@@ -367,8 +367,8 @@ class XPlaneConnect final {
     /// \returns      If an error occurs, a negative number. Otherwise, the number of bytes read.
     std::vector<char> readUDP(std::size_t size);
 
-    int sendDREFRequest(const char *drefs[], unsigned char count);
-    int getDREFResponse(float *values[], unsigned char count, int sizes[]);
+    void sendDREFRequest(const std::vector<std::string> &drefs);
+    std::vector<std::vector<float>> getDREFResponse(std::uint8_t count);
     int sendTERRRequest(double posi[3], char ac);
     int getTERRResponse(double values[11], char ac);
 

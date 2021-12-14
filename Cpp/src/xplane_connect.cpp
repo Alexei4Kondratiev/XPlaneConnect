@@ -568,69 +568,82 @@ void XPlaneConnect::sendDREFs(const std::vector<std::string> &drefs, const std::
     }
 }
 
-int XPlaneConnect::sendDREFRequest(const char *drefs[], unsigned char count) {
+void XPlaneConnect::sendDREFRequest(const std::vector<std::string> &drefs) {
+    static const std::size_t command_size{65536U};
+    static const std::string command_tag{"GETD"};
+    static const std::size_t command_pos{5U};
+
+    if (drefs.empty()) {
+        return;
+    }
+    if (drefs.size() > std::numeric_limits<unsigned char>::max()) {
+        throw getDREFsError{
+            ComposeErrorMessage(__FILE__, __func__, __LINE__,
+                                "size " + std::to_string(drefs.size()) + " is too big. Must be less than 256")};
+    }
+
     // Setup command
     // 6 byte header + potentially 255 drefs, each 256 chars long.
     // Easiest to just round to an even 2^16.
-    char buffer[65536] = "GETD";
-    buffer[5] = count;
-    int len = 6;
-    int i; // iterator
-    for (i = 0; i < count; ++i) {
-        std::size_t drefLen = strnlen(drefs[i], 256);
-        if (drefLen > 255) {
-            printError("getDREFs", "dref %d is too long.", i);
-            return -1;
+    std::vector<char> buffer{command_tag.begin(), command_tag.end()};
+    buffer.resize(command_size);
+    buffer[command_pos] = static_cast<char>(drefs.size());
+    std::size_t len = command_pos + 1;
+    for (const auto &dref : drefs) {
+        std::size_t drefLen = dref.length();
+        if (drefLen > std::numeric_limits<unsigned char>::max()) {
+            throw getDREFsError{ComposeErrorMessage(__FILE__, __func__, __LINE__,
+                                                    "dref " + std::to_string(drefLen) +
+                                                        " is too long. Must be less than 256 characters")};
         }
-        buffer[len++] = (unsigned char)drefLen;
-        strncpy(buffer + len, drefs[i], drefLen);
+        buffer[len++] = static_cast<char>(drefLen);
+        std::copy_n(dref.begin(), drefLen, std::next(buffer.begin(), static_cast<std::int64_t>(len)));
         len += drefLen;
     }
+    buffer.resize(len);
+
     // Send Command
-    if (sendUDP(buffer, len) < 0) {
-        printError("getDREFs", "Failed to send command");
-        return -2;
+    try {
+        sendUDP(buffer);
+    } catch (const SendUDPError &ex) {
+        throw getDREFsError{
+            ComposeErrorMessage(__FILE__, __func__, __LINE__, "Failed to send command: " + std::string{ex.what()})};
     }
-    return 0;
 }
 
-int XPlaneConnect::getDREFResponse(float *values[], unsigned char count, int sizes[]) {
-    char buffer[65536];
-    int result = readUDP(buffer, 65536);
+std::vector<std::vector<float>> XPlaneConnect::getDREFResponse(std::uint8_t count) {
+    static const std::size_t command_size{65536U};
+    static const std::size_t command_pos{5U};
 
-    if (result < 0) {
-#ifdef _WIN32
-        printError("getDREFs", "Read operation failed. (%d)", WSAGetLastError());
-#else
-        printError("getDREFs", "Read operation failed.");
-#endif
-        return -1;
-    }
-
-    if (result < 6) {
-        printError("getDREFs", "Response was too short. Expected at least 6 bytes, but only got %d.", result);
-        return -2;
-    }
-    if (buffer[5] != count) {
-        printError("getDREFs", "Unexpected response size. Expected %d rows, got %d instead.", count, buffer[5]);
-        return -3;
+    std::vector<char> buffer;
+    try {
+        buffer = readUDP(command_size);
+    } catch (const SendUDPError &ex) {
+        throw getDREFsError{
+            ComposeErrorMessage(__FILE__, __func__, __LINE__, "Read operation failed: " + std::string{ex.what()})};
     }
 
-    int cur = 6;
-    int i; // Iterator
-    for (i = 0; i < count; ++i) {
-        int l = buffer[cur++];
-        if (l > sizes[i]) {
-            printError("getDREFs", "values is too small. Row had %d values, only room for %d.", l, sizes[i]);
-            // Copy as many values as we can anyway
-            memcpy(values[i], buffer + cur, sizes[i] * sizeof(float));
-        } else {
-            memcpy(values[i], buffer + cur, l * sizeof(float));
-            sizes[i] = l;
-        }
-        cur += l * sizeof(float);
+    if (buffer.empty() || buffer.size() <= command_pos) {
+        throw getDREFsError{ComposeErrorMessage(__FILE__, __func__, __LINE__,
+                                                "Response was too short. Expected at least 6 bytes, but only got " +
+                                                    std::to_string(buffer.size()))};
     }
-    return 0;
+    if (buffer[command_pos] != count) {
+        throw getDREFsError{ComposeErrorMessage(__FILE__, __func__, __LINE__,
+                                                "Unexpected response size. Expected " +
+                                                    std::to_string(static_cast<std::size_t>(count)) + " rows, got " +
+                                                    std::to_string(static_cast<std::size_t>(buffer[5])) + " instead")};
+    }
+
+    std::vector<std::vector<float>> values(count);
+    std::size_t cur = command_pos + 1;
+    for (std::size_t i = 0; i < count; ++i) {
+        std::size_t len = static_cast<std::uint8_t>(buffer[cur++]);
+        values[i].resize(len * sizeof(float));
+        std::memcpy(values[i].data(), &buffer[cur], len * sizeof(float));
+        cur += len * sizeof(float);
+    }
+    return values;
 }
 
 int XPlaneConnect::getDREF(const char *dref, float values[], int *size) { return getDREFs(&dref, &values, 1, size); }
@@ -652,6 +665,7 @@ int XPlaneConnect::getDREFs(const char *drefs[], float *values[], unsigned char 
     }
     return 0;
 }
+
 /*****************************************************************************/
 /****                        End DREF functions                           ****/
 /*****************************************************************************/
@@ -659,6 +673,7 @@ int XPlaneConnect::getDREFs(const char *drefs[], float *values[], unsigned char 
 /*****************************************************************************/
 /****                          POSI functions                             ****/
 /*****************************************************************************/
+
 int XPlaneConnect::getPOSI(double values[7], char ac) {
     // Setup send command
     char buffer[6] = "GETP";
