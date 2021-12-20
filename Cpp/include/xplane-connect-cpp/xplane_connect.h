@@ -41,6 +41,7 @@
 #include <array>
 #include <memory>
 #include <string>
+#include <string_view>
 #include <vector>
 
 namespace xpc {
@@ -307,7 +308,7 @@ class XPlaneConnect final {
     /// \param x    The distance in pixels from the left edge of the screen to print the text.
     /// \param y    The distance in pixels from the bottom edge of the screen to print the top line of text.
     /// \returns    0 if successful, otherwise a negative value.
-    int sendTEXT(char *msg, int x, int y);
+    void sendTEXT(std::string_view msg, std::int32_t x, std::int32_t y);
 
     /// Sets the camera view in X-Plane.
     ///
@@ -325,7 +326,7 @@ class XPlaneConnect final {
     ///               interpreted as a (Lat, Lon, Alt) point.
     /// \param count  The number of points. There should be 3 * count elements in points.
     /// \returns      0 if successful, otherwise a negative value.
-    int sendWYPT(WYPT_OP op, float points[], int count);
+    void sendWYPT(WYPT_OP op, const std::vector<float> &points);
 
     /// Sends commands.
     ///

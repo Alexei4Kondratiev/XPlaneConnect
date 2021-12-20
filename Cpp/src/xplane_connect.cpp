@@ -1014,69 +1014,85 @@ void XPlaneConnect::sendCTRL(const std::vector<float> &values, std::uint8_t ac) 
 /****                        Drawing functions                            ****/
 /*****************************************************************************/
 
-int XPlaneConnect::sendTEXT(char *msg, int x, int y) {
-    if (msg == NULL) {
-        msg = "";
-    }
-    std::size_t msgLen = strnlen(msg, 255);
+void XPlaneConnect::sendTEXT(std::string_view msg, std::int32_t x, std::int32_t y) {
+    static const std::size_t command_size{269U};
+    static const std::string command_tag{"TEXT"};
+    static const std::size_t command_pos{5U};
+    static const std::size_t request_min_size{14U};
+
     // Input Validation
+    if (msg.empty()) {
+        return;
+    }
+    if (msg.length() > 255) {
+        throw sendTEXTError{ComposeErrorMessage(
+            __FILE__, __func__, __LINE__, "Message must be less than 255 bytes: " + std::to_string(msg.length()))};
+    }
     if (x < -1) {
-        printError("sendTEXT", "x should be positive (or -1 for default).");
         // Technically, this should work, and may print something to the screen.
+        throw sendTEXTError{ComposeErrorMessage(__FILE__, __func__, __LINE__,
+                                                "X should be positive (or -1 for default): " + std::to_string(x))};
     }
     if (y < -1) {
-        printError("sendTEXT", "y should be positive (or -1 for default).");
         // Negative y will never result in text being displayed.
-        return -1;
-    }
-    if (msgLen > 255) {
-        printError("sendTEXT", "msg must be less than 255 bytes.");
-        return -2;
+        throw sendTEXTError{ComposeErrorMessage(__FILE__, __func__, __LINE__,
+                                                "Y should be positive (or -1 for default): " + std::to_string(y))};
     }
 
     // Setup command
     // 5 byte header + 8 byte position + up to 256 byte message
-    char buffer[269] = "TEXT";
-    std::size_t len = 14 + msgLen;
-    memcpy(buffer + 5, &x, sizeof(int));
-    memcpy(buffer + 9, &y, sizeof(int));
-    buffer[13] = (unsigned char)msgLen;
-    strncpy(buffer + 14, msg, msgLen);
+    std::vector<char> buffer{command_tag.begin(), command_tag.end()};
+    buffer.resize(command_size);
+    std::size_t len = request_min_size + msg.length();
+    std::memcpy(&buffer[command_pos], &x, sizeof(std::int32_t));
+    std::memcpy(&buffer[command_pos + sizeof(std::int32_t)], &y, sizeof(std::int32_t));
+    buffer[request_min_size - 1] = static_cast<char>(msg.length());
+    std::copy(msg.begin(), msg.end(), std::next(buffer.begin(), request_min_size));
 
     // Send Command
-    if (sendUDP(buffer, len) < 0) {
-        printError("sendTEXT", "Failed to send command");
-        return -3;
+    try {
+        sendUDP(buffer);
+    } catch (const SendUDPError &ex) {
+        throw sendTEXTError{
+            ComposeErrorMessage(__FILE__, __func__, __LINE__, "Failed to send command: " + std::string{ex.what()})};
     }
-    return 0;
 }
 
-int XPlaneConnect::sendWYPT(WYPT_OP op, float points[], int count) {
+void XPlaneConnect::sendWYPT(WYPT_OP op, const std::vector<float> &points) {
+    static const std::size_t command_size{7U};
+    static const std::string command_tag{"WYPT"};
+    static const std::size_t command_pos{5U};
+
     // Input Validation
-    if (op < WYPT_OP::XPC_WYPT_ADD || op > WYPT_OP::XPC_WYPT_CLR) {
-        printError("sendWYPT", "Unrecognized operation.");
-        return -1;
+    if (points.empty()) {
+        return;
     }
-    if (count > 255) {
-        printError("sendWYPT", "Too many points. Must be less than 256.");
-        return -2;
+    if (points.size() > 255) {
+        throw sendWYPTError{ComposeErrorMessage(
+            __FILE__, __func__, __LINE__, "Too many points. Must be less than 256: " + std::to_string(points.size()))};
+    }
+    if (op < WYPT_OP::XPC_WYPT_ADD || op > WYPT_OP::XPC_WYPT_CLR) {
+        throw sendWYPTError{ComposeErrorMessage(__FILE__, __func__, __LINE__, "Unrecognized operation")};
     }
 
     // Setup Command
     // 7 byte header + 12 bytes * count
-    char buffer[3067] = "WYPT";
-    buffer[5] = (unsigned char)op;
-    buffer[6] = (unsigned char)count;
-    std::size_t ptLen = sizeof(float) * 3 * count;
-    memcpy(buffer + 7, points, ptLen);
+    std::vector<char> buffer{command_tag.begin(), command_tag.end()};
+    std::size_t ptLen = sizeof(float) * 3 * points.size();
+    buffer.resize(command_size + ptLen);
+    buffer[command_pos] = static_cast<char>(op);
+    buffer[command_pos + 1] = static_cast<char>(points.size());
+    std::memcpy(&buffer[command_size], points.data(), ptLen);
 
     // Send Command
-    if (sendUDP(buffer, 7 + 12 * count) < 0) {
-        printError("sendWYPT", "Failed to send command");
-        return -2;
+    try {
+        sendUDP(buffer);
+    } catch (const SendUDPError &ex) {
+        throw sendWYPTError{
+            ComposeErrorMessage(__FILE__, __func__, __LINE__, "Failed to send command: " + std::string{ex.what()})};
     }
-    return 0;
 }
+
 /*****************************************************************************/
 /****                      End Drawing functions                          ****/
 /*****************************************************************************/
@@ -1084,6 +1100,7 @@ int XPlaneConnect::sendWYPT(WYPT_OP op, float points[], int count) {
 /*****************************************************************************/
 /****                          View functions                             ****/
 /*****************************************************************************/
+
 int XPlaneConnect::sendVIEW(VIEW_TYPE view) {
     // Validate Input
     if (view < VIEW_TYPE::XPC_VIEW_FORWARDS || view > VIEW_TYPE::XPC_VIEW_FULLSCREENNOHUD) {
