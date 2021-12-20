@@ -285,7 +285,7 @@ class XPlaneConnect final {
     ///               Throttle, Gear, Flaps, Speed Brakes]
     /// \param ac     The aircraft to get the control surfaces of. 0 is the main/user's aircraft.
     /// \returns      0 if successful, otherwise a negative value.
-    int getCTRL(float values[7], char ac);
+    std::vector<float> getCTRL(std::uint8_t ac);
 
     /// Sets the control surfaces of the specified aircraft.
     ///
@@ -296,7 +296,7 @@ class XPlaneConnect final {
     /// \param size   The number of elements in values.
     /// \param ac     The aircraft to set the control surfaces of. 0 for the main/user's aircraft.
     /// \returns      0 if successful, otherwise a negative value.
-    int sendCTRL(float values[], int size, char ac);
+    void sendCTRL(const std::vector<float> &values, std::uint8_t ac);
 
     // Drawing
 
@@ -337,11 +337,11 @@ class XPlaneConnect final {
   private:
     struct XPCSocket;
 
-    /// Opens a new connection to XPC on the specified localPort.
+    /// Opens a new connection to XPC on the specified local_port.
     ///
     /// \param xplaneIPv4Addr   A string representing the IP address of the host running X-Plane.
-    /// \param xplanePort The localPort of the X-Plane Connect plugin is listening on. Usually 49009.
-    /// \param localPort   The local localPort to use when sending and receiving data from XPC.
+    /// \param xplanePort The local_port of the X-Plane Connect plugin is listening on. Usually 49009.
+    /// \param localPort   The local local_port to use when sending and receiving data from XPC.
     /// \returns      An XPCSocket struct representing the newly created connection.
     static std::unique_ptr<XPCSocket> openUDP(std::string xplaneIPv4Addr, unsigned short xplanePort,
                                               unsigned short localPort);
@@ -372,7 +372,7 @@ class XPlaneConnect final {
     void sendTERRRequest(const std::vector<double> &posi, std::uint8_t ac);
     std::vector<double> getTERRResponse();
 
-    std::unique_ptr<XPCSocket> pXPCSocket_;
+    std::unique_ptr<XPCSocket> pImpl_;
 };
 
 } // namespace xpc

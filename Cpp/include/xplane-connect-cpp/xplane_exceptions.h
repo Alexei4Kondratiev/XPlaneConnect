@@ -104,6 +104,16 @@ class sendPOSTError : public XPlaneConnectError {
     using XPlaneConnectError::XPlaneConnectError;
 };
 
+class getCTRLError : public XPlaneConnectError {
+  public:
+    using XPlaneConnectError::XPlaneConnectError;
+};
+
+class sendCTRLError : public XPlaneConnectError {
+  public:
+    using XPlaneConnectError::XPlaneConnectError;
+};
+
 } // namespace xpc
 
 #endif // INCLUDE_XPLANE_CONNECT_CPP_XPLANE_EXCEPTIONS_H_

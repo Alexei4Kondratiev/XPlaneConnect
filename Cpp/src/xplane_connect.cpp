@@ -76,9 +76,9 @@ constexpr std::uint16_t kXPCDefaultXplanePort{49009};
 
 struct XPlaneConnect::XPCSocket {
     // X-Plane IP and Port
-    std::string xplaneIPv4Addr;
-    std::uint16_t xplanePort{0};
-    std::uint16_t localPort{0};
+    std::string xplane_ipv4_addr;
+    std::uint16_t xplane_port{0};
+    std::uint16_t local_port{0};
 
 #ifdef _WIN32
     SOCKET datagramSocket{INVALID_SOCKET};
@@ -131,11 +131,11 @@ void printError(const char *functionName, const char *format, ...) {
 /****                       Low Level UDP functions                       ****/
 /*****************************************************************************/
 
-/// Opens a new connection to XPC on the specified localPort.
+/// Opens a new connection to XPC on the specified local_port.
 ///
 /// \param xplaneIPv4Addr   A string representing the IP address of the host running X-Plane.
-/// \param xplanePort The localPort of the X-Plane Connect plugin is listening on. Usually 49009.
-/// \param localPort   The local localPort to use when sending and receiving data from XPC.
+/// \param xplanePort The local_port of the X-Plane Connect plugin is listening on. Usually 49009.
+/// \param localPort   The local local_port to use when sending and receiving data from XPC.
 /// \returns      An XPCSocket struct representing the newly created connection.
 std::unique_ptr<XPlaneConnect::XPCSocket> XPlaneConnect::openUDP(std::string xplaneIPv4Addr, unsigned short xplanePort,
                                                                  unsigned short localPort) {
@@ -144,8 +144,8 @@ std::unique_ptr<XPlaneConnect::XPCSocket> XPlaneConnect::openUDP(std::string xpl
         xplaneIPv4Addr = "127.0.0.1";
     }
     auto pXPCSocket = std::make_unique<XPCSocket>();
-    pXPCSocket->xplaneIPv4Addr = std::move(xplaneIPv4Addr);
-    pXPCSocket->xplanePort = xplanePort == 0 ? 49009 : xplanePort;
+    pXPCSocket->xplane_ipv4_addr = std::move(xplaneIPv4Addr);
+    pXPCSocket->xplane_port = xplanePort == 0 ? 49009 : xplanePort;
 
     try {
         winSockInit();
@@ -197,17 +197,17 @@ std::unique_ptr<XPlaneConnect::XPCSocket> XPlaneConnect::openUDP(std::string xpl
 /// \param sock The socket to close.
 int XPlaneConnect::closeUDP() {
 #ifdef _WIN32
-    int status = shutdown(pXPCSocket_->datagramSocket, SD_BOTH);
+    int status = shutdown(pImpl_->datagramSocket, SD_BOTH);
     if (status == 0) {
-        status = closesocket(pXPCSocket_->datagramSocket);
+        status = closesocket(pImpl_->datagramSocket);
     }
-    pXPCSocket_->datagramSocket = INVALID_SOCKET;
+    pImpl_->datagramSocket = INVALID_SOCKET;
 #else  //  _WIN32
-    int status = shutdown(pXPCSocket_->datagramSocket, SHUT_RDWR);
+    int status = shutdown(pImpl_->datagramSocket, SHUT_RDWR);
     if (status == 0) {
-        status = close(pXPCSocket_->datagramSocket);
+        status = close(pImpl_->datagramSocket);
     }
-    pXPCSocket_->datagramSocket = -1;
+    pImpl_->datagramSocket = -1;
 #endif //  _WIN32
     return status;
 }
@@ -234,7 +234,7 @@ XPlaneConnect::XPlaneConnect(std::string xplaneIPv4Addr)
 /// \throws java.net.SocketException      If this instance is unable to bind to the specified port.
 /// \throws java.net.UnknownHostException If the specified hostname can not be resolved.
 XPlaneConnect::XPlaneConnect(std::string xplaneIPv4Addr, std::uint16_t xplanePort, std::uint16_t localPort)
-    : pXPCSocket_{openUDP(std::move(xplaneIPv4Addr), xplanePort, localPort)} {}
+    : pImpl_{openUDP(std::move(xplaneIPv4Addr), xplanePort, localPort)} {}
 
 /// Closes the specified connection and releases resources associated with it.
 XPlaneConnect::~XPlaneConnect() {
@@ -245,31 +245,29 @@ XPlaneConnect::~XPlaneConnect() {
 /// Gets the hostname of the X-Plane host.
 ///
 /// @return The hostname of the X-Plane host.
-const std::string &XPlaneConnect::getXPlaneAddr() const noexcept { return pXPCSocket_->xplaneIPv4Addr; }
+const std::string &XPlaneConnect::getXPlaneAddr() const noexcept { return pImpl_->xplane_ipv4_addr; }
 
 /// Sets the hostname of the X-Plane host.
 ///
 /// @param host The new hostname of the X-Plane host machine.
 /// @throws UnknownHostException {@code host} is not valid.
-void XPlaneConnect::setXplaneAddr(std::string xplaneAddr) noexcept {
-    pXPCSocket_->xplaneIPv4Addr = std::move(xplaneAddr);
-}
+void XPlaneConnect::setXplaneAddr(std::string xplaneAddr) noexcept { pImpl_->xplane_ipv4_addr = std::move(xplaneAddr); }
 
 /// Gets the port on which the client sends data to X-Plane.
 ///
 /// @return The outgoing port number.
-std::uint16_t XPlaneConnect::getXPlanePort() const noexcept { return pXPCSocket_->xplanePort; }
+std::uint16_t XPlaneConnect::getXPlanePort() const noexcept { return pImpl_->xplane_port; }
 
 /// Sets the port on which the client sends data to X-Plane
 ///
 /// @param port The new outgoing port number.
 /// @throws IllegalArgumentException If {@code port} is not a valid port number.
-void XPlaneConnect::setXPlanePort(std::uint16_t xplanePort) noexcept { pXPCSocket_->xplanePort = xplanePort; }
+void XPlaneConnect::setXPlanePort(std::uint16_t xplanePort) noexcept { pImpl_->xplane_port = xplanePort; }
 
 /// Gets the port on which the client receives data from the plugin.
 ///
 /// @return The incoming port number.
-std::uint16_t XPlaneConnect::getRecvPort() const noexcept { return pXPCSocket_->localPort; }
+std::uint16_t XPlaneConnect::getRecvPort() const noexcept { return pImpl_->local_port; }
 
 /// Sends the given data to the X-Plane plugin.
 ///
@@ -285,10 +283,10 @@ int XPlaneConnect::sendUDP(const std::vector<char> &buffer) {
     // Set up destination address
     sockaddr_in dst{};
     dst.sin_family = AF_INET;
-    dst.sin_port = htons(pXPCSocket_->xplanePort);
-    inet_pton(AF_INET, pXPCSocket_->xplaneIPv4Addr.c_str(), &dst.sin_addr.s_addr);
+    dst.sin_port = htons(pImpl_->xplane_port);
+    inet_pton(AF_INET, pImpl_->xplane_ipv4_addr.c_str(), &dst.sin_addr.s_addr);
 
-    int result = sendto(pXPCSocket_->datagramSocket, buffer.data(), static_cast<int>(buffer.size()), 0,
+    int result = sendto(pImpl_->datagramSocket, buffer.data(), static_cast<int>(buffer.size()), 0,
                         (const struct sockaddr *)&dst, sizeof(dst));
     if (result < 0) {
         throw SendUDPError{
@@ -319,9 +317,9 @@ std::vector<char> XPlaneConnect::readUDP(std::size_t size) {
 
     // Setup for Select
     FD_ZERO(&stReadFDS);
-    FD_SET(pXPCSocket_->datagramSocket, &stReadFDS);
+    FD_SET(pImpl_->datagramSocket, &stReadFDS);
     FD_ZERO(&stExceptFDS);
-    FD_SET(pXPCSocket_->datagramSocket, &stExceptFDS);
+    FD_SET(pImpl_->datagramSocket, &stExceptFDS);
 
     // Set timeout period for select to 0.05 sec = 50 milliseconds = 50,000 microseconds (0 makes it polling)
     // TO DO - This could be set to 0 if a message handling system were implemented, like in the plugin.
@@ -329,7 +327,7 @@ std::vector<char> XPlaneConnect::readUDP(std::size_t size) {
     timeout.tv_usec = 50000;
 
     // Select Command
-    int status = select(static_cast<int>(pXPCSocket_->datagramSocket + 1), &stReadFDS, nullptr, &stExceptFDS, &timeout);
+    int status = select(static_cast<int>(pImpl_->datagramSocket + 1), &stReadFDS, nullptr, &stExceptFDS, &timeout);
     if (status < 0) {
         throw ReadUDPError{
             ComposeErrorMessage(__FILE__, __func__, __LINE__, "Select command error: " + std::to_string(status))};
@@ -341,7 +339,7 @@ std::vector<char> XPlaneConnect::readUDP(std::size_t size) {
 
     std::vector<char> buffer(size);
     // If no error: Read Data
-    status = recv(pXPCSocket_->datagramSocket, buffer.data(), static_cast<int>(size), 0);
+    status = recv(pImpl_->datagramSocket, buffer.data(), static_cast<int>(size), 0);
     if (status < 0) {
         throw ReadUDPError{
             ComposeErrorMessage(__FILE__, __func__, __LINE__, "Error reading socket: " + std::to_string(status))};
@@ -378,7 +376,7 @@ void XPlaneConnect::setCONN(std::uint16_t port) {
 
     // Switch socket
     closeUDP();
-    pXPCSocket_ = openUDP(pXPCSocket_->xplaneIPv4Addr, pXPCSocket_->xplanePort, port);
+    pImpl_ = openUDP(pImpl_->xplane_ipv4_addr, pImpl_->xplane_port, port);
 
     // Read response
     try {
@@ -916,76 +914,98 @@ std::vector<double> XPlaneConnect::getTERR(const std::vector<double> &posi, std:
 /****                          CTRL functions                             ****/
 /*****************************************************************************/
 
-int XPlaneConnect::getCTRL(float values[7], char ac) {
+std::vector<float> XPlaneConnect::getCTRL(std::uint8_t ac) {
+    static const std::size_t command_size{6U};
+    static const std::string command_tag{"GETC"};
+    static const std::size_t command_pos{5U};
+    static const std::size_t read_buffer_size{31U};
+    static const std::size_t response_values_size{7U};
+
     // Setup send command
-    char buffer[6] = "GETC";
-    buffer[5] = ac;
+    std::vector<char> buffer{command_tag.begin(), command_tag.end()};
+    buffer.resize(command_size);
+    buffer[command_pos] = static_cast<char>(ac);
 
     // Send command
-    if (sendUDP(buffer, 6) < 0) {
-        printError("getCTRL", "Failed to send command.");
-        return -1;
+    try {
+        sendUDP(buffer);
+    } catch (const SendUDPError &ex) {
+        throw getCTRLError{
+            ComposeErrorMessage(__FILE__, __func__, __LINE__, "Failed to send command: " + std::string{ex.what()})};
     }
 
     // Get response
-    char readBuffer[31];
-    int readResult = readUDP(readBuffer, 31);
-    if (readResult < 0) {
-        printError("getCTRL", "Failed to read response.");
-        return -2;
+    std::vector<char> readBuffer;
+    try {
+        readBuffer = readUDP(read_buffer_size);
+    } catch (const ReadUDPError &ex) {
+        throw getCTRLError{
+            ComposeErrorMessage(__FILE__, __func__, __LINE__, "Failed to read response: " + std::string{ex.what()})};
     }
-    if (readResult != 31) {
-        printError("getCTRL", "Unexpected response length.");
-        return -3;
+    if (readBuffer.size() != read_buffer_size) {
+        throw getCTRLError{ComposeErrorMessage(__FILE__, __func__, __LINE__,
+                                               "Unexpected response length: " + std::to_string(readBuffer.size()))};
     }
 
+    std::vector<float> values(response_values_size);
     // Copy response into values
-    memcpy(values, readBuffer + 5, 4 * sizeof(float));
-    values[4] = readBuffer[21];
-    values[5] = *((float *)(readBuffer + 22));
-    values[6] = *((float *)(readBuffer + 27));
-    return 0;
+    std::memcpy(values.data(), &readBuffer[command_pos], 4 * sizeof(float));
+    values[4] = readBuffer[command_pos + 4 * sizeof(float)];
+    values[5] = *reinterpret_cast<float *>(&readBuffer[command_pos + 4 * sizeof(float) + 1]);
+    values[6] = *reinterpret_cast<float *>(&readBuffer[read_buffer_size - sizeof(float)]);
+    return values;
 }
 
-int XPlaneConnect::sendCTRL(float values[], int size, char ac) {
+void XPlaneConnect::sendCTRL(const std::vector<float> &values, std::uint8_t ac) {
+    static const std::size_t command_size{31U};
+    static const std::string command_tag{"CTRL"};
+    static const std::size_t command_pos{5U};
+    static const std::size_t request_values_size{7U};
+
     // Validate input
-    if (ac < 0 || ac > 20) {
-        printError("sendCTRL", "aircraft should be a value between 0 and 20.");
-        return -1;
+    if (values.empty()) {
+        return;
     }
-    if (size < 1 || size > 7) {
-        printError("sendCTRL", "size should be a value between 1 and 7.");
-        return -2;
+    if (values.size() > request_values_size) {
+        throw sendCTRLError{ComposeErrorMessage(
+            __FILE__, __func__, __LINE__, "Size should be a value between 1 and 7: " + std::to_string(values.size()))};
+    }
+    if (ac > 20) {
+        throw sendCTRLError{ComposeErrorMessage(__FILE__, __func__, __LINE__,
+                                                "Aircraft should be a value between 0 and 20: " +
+                                                    std::to_string(static_cast<std::size_t>(ac)))};
     }
 
     // Setup Command
     // 5 byte header + 5 float values * 4 + 2 byte values
-    char buffer[31] = "CTRL";
-    int cur = 5;
-    int i; // iterator
-    for (i = 0; i < 6; i++) {
+    std::vector<char> buffer{command_tag.begin(), command_tag.end()};
+    buffer.resize(command_size);
+    std::size_t cur = command_pos;
+    for (std::size_t i = 0; i < request_values_size - 1; ++i) {
         float val = -998;
 
-        if (i < size) {
+        if (i < values.size()) {
             val = values[i];
         }
         if (i == 4) {
-            buffer[cur++] = val == -998 ? -1 : (unsigned char)val;
+            buffer[cur++] = (val == -998) ? static_cast<char>(-1) : static_cast<char>(val);
         } else {
-            *((float *)(buffer + cur)) = val;
+            *reinterpret_cast<float *>(&buffer[cur]) = val;
             cur += sizeof(float);
         }
     }
-    buffer[26] = ac;
-    *((float *)(buffer + 27)) = size == 7 ? values[6] : -998;
+    buffer[command_size - sizeof(float) - 1] = static_cast<char>(ac);
+    *reinterpret_cast<float *>(&buffer[command_size - sizeof(float)]) = (values.size() == 7) ? values[6] : -998;
 
     // Send Command
-    if (sendUDP(buffer, 31) < 0) {
-        printError("sendCTRL", "Failed to send command");
-        return -3;
+    try {
+        sendUDP(buffer);
+    } catch (const SendUDPError &ex) {
+        throw sendCTRLError{
+            ComposeErrorMessage(__FILE__, __func__, __LINE__, "Failed to send command: " + std::string{ex.what()})};
     }
-    return 0;
 }
+
 /*****************************************************************************/
 /****                        End CTRL functions                           ****/
 /*****************************************************************************/
@@ -993,6 +1013,7 @@ int XPlaneConnect::sendCTRL(float values[], int size, char ac) {
 /*****************************************************************************/
 /****                        Drawing functions                            ****/
 /*****************************************************************************/
+
 int XPlaneConnect::sendTEXT(char *msg, int x, int y) {
     if (msg == NULL) {
         msg = "";
